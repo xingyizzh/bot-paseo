@@ -19,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "check": "node scripts/check.mjs",
     "check:fast": "node scripts/check.mjs --fast",
-    "test": "vitest run",
+    "test": "vitest run --config tests/vitest.config.mjs",
     "verify": "node scripts/verify.mjs"
   },
   "devDependencies": {
