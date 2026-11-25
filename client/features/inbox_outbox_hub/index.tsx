@@ -6,6 +6,7 @@ import type {
 import { ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
+import { resolveExecutionCapabilities } from "../../../shared/contracts";
 import { useHubActions, useHubSnapshot } from "../../core/hooks";
 import type { ClientFeature } from "../../core/kernel";
 import { ActionButton, SegmentTabs } from "../../core/primitives";
@@ -67,7 +68,8 @@ function BotStudioNavItem({ currentScreen, openScreen }: PluginSidebarItemProps)
 function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenProps) {
   const toast = useToast();
   const { snapshot, isLoading } = useHubSnapshot();
-  const { importHq } = useHubActions();
+  const { importHq, updateSettings } = useHubActions();
+  const capabilities = resolveExecutionCapabilities(snapshot?.settings);
   const [tab, setTab] = useState<HubTab>(params.tab === "inbox" ? "inbox" : "outbox");
 
   useEffect(() => {
@@ -88,6 +90,19 @@ function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenPr
       );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "导入 Personal HQ 失败");
+    }
+  };
+
+  const handleTogglePaseo = async () => {
+    const nextEnabled = !capabilities.threads;
+    try {
+      await updateSettings.mutateAsync({ paseoEnabled: nextEnabled });
+      toast.show(
+        nextEnabled ? "已开启 Paseo 线程与 Worktree" : "已切换为纯 Bot 模式（关闭线程后端）",
+        { variant: "success" },
+      );
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "切换模式失败");
     }
   };
 
@@ -114,13 +129,22 @@ function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenPr
               Outbox 注意力收口与 Inbox 原话锁存分诊
             </Text>
           </View>
-          <ActionButton
-            label={importHq.isPending ? "导入中..." : "导入 Personal HQ"}
-            variant="secondary"
-            disabled={importHq.isPending}
-            theme={theme}
-            onPress={() => void handleImportHq()}
-          />
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <ActionButton
+              label={capabilities.threads ? "Paseo 线程: 开" : "纯 Bot 模式"}
+              variant={capabilities.threads ? "secondary" : "primary"}
+              disabled={updateSettings.isPending}
+              theme={theme}
+              onPress={() => void handleTogglePaseo()}
+            />
+            <ActionButton
+              label={importHq.isPending ? "导入中..." : "导入 Personal HQ"}
+              variant="secondary"
+              disabled={importHq.isPending}
+              theme={theme}
+              onPress={() => void handleImportHq()}
+            />
+          </View>
         </View>
 
         <SegmentTabs<HubTab>
@@ -141,6 +165,7 @@ function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenPr
           <OutboxTab
             items={snapshot?.outbox ?? []}
             bots={snapshot?.bots ?? []}
+            capabilities={capabilities}
             navigation={navigation}
             theme={theme}
           />
@@ -148,6 +173,7 @@ function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenPr
           <InboxTab
             items={snapshot?.inbox ?? []}
             bots={snapshot?.bots ?? []}
+            capabilities={capabilities}
             navigation={navigation}
             theme={theme}
           />

@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type {
+  AgentToolContext,
   PluginHookContext,
   PluginHooks,
   PluginHookPayload,
@@ -15,13 +16,18 @@ import {
   DomainError,
   ERROR_CODES,
   type BotHubSnapshot,
+  type HubSettings,
 } from "../../shared/contracts";
 import {
+  botOpenSessionRpc,
   botSnapshotRpc,
   botUpsertRpc,
   hubSubscribe,
   inboxAddRpc,
+  outboxDigestToButlerRpc,
+  settingsUpdateRpc,
   threadDispatchRpc,
+  threadInspectRpc,
 } from "../../shared/rpc";
 
 const tempDirs: string[] = [];
@@ -65,7 +71,7 @@ function createHarness() {
     },
   } as unknown as PluginServerContext;
 
-  const createdAgents: { id: string; cwd: string; metadata?: Record<string, unknown> }[] = [];
+  const createdAgents: { id: string; cwd: string; prompt?: string; metadata?: Record<string, unknown> }[] = [];
   let seq = 0;
 
   const paseo = {
@@ -94,9 +100,9 @@ function createHarness() {
       async list() {
         return { entries: [] };
       },
-      async create(opts: { cwd: string; metadata?: Record<string, unknown> }) {
+      async create(opts: { cwd: string; prompt?: string; metadata?: Record<string, unknown> }) {
         seq += 1;
-        const created = { id: `agent-${seq}`, cwd: opts.cwd, metadata: opts.metadata };
+        const created = { id: `agent-${seq}`, cwd: opts.cwd, prompt: opts.prompt, metadata: opts.metadata };
         createdAgents.push(created);
         return created;
       },
@@ -159,7 +165,7 @@ function createHarness() {
     return { snapshots, abort: () => controller.abort(), done };
   };
 
-  return { server, hooks, createdAgents, invokeRpc, emitHook, subscribeHub };
+  return { server, hooks, paseo, createdAgents, invokeRpc, emitHook, subscribeHub };
 }
 
 describe("end-to-end server plugin kernel", () => {
@@ -279,6 +285,8 @@ describe("end-to-end server plugin kernel", () => {
       "bot_list",
       "inbox_capture",
       "inbox_list",
+      "outbox_ack",
+      "outbox_list",
       "outbox_post",
       "thread_inspect",
     ]);
@@ -317,6 +325,61 @@ describe("end-to-end server plugin kernel", () => {
       outcome: { kind: "completed" },
     });
 
+    // Sub-bot QA gate: worker turn.after wakes the owning project_lead instead of bypassing straight into Outbox
+    const leadHomeAgent = h.createdAgents.find((a) => a.metadata?.["paseo-bot.botId"] === lead.id && a.metadata?.["paseo-bot.kind"] === "bot-home");
+    expect(leadHomeAgent).toBeDefined();
+    expect(leadHomeAgent?.prompt).toContain(dispatched.agentId);
+
+    const beforeQaSnap = (await h.invokeRpc(botSnapshotRpc.name, {})) as BotHubSnapshot;
+    expect(beforeQaSnap.outbox.some((item) => item.kind === "delivered")).toBe(false);
+
+    // Owner project_lead inspects worker and formally escalates via outbox_post(threadAgentId)
+    const leadPatch = (await h.emitHook("agent.open.before", {
+      request: {
+        agentId: leadHomeAgent!.id,
+        workspaceId: null,
+        provider: "claude/sonnet",
+        cwd: "/tmp/default-workspace",
+        reason: "create",
+        purpose: "interactive",
+        title: "Project Lead",
+        background: false,
+        labels: {},
+        metadata: { "paseo-bot.botId": lead.id },
+        tools: [],
+        env: {},
+        mcpServers: {},
+      } satisfies PluginSessionOpenRequest,
+    })) as PluginSessionOpenRequest;
+    const leadToolMap = new Map(leadPatch.tools.map((t) => [t.name, t]));
+    const leadToolCtx: AgentToolContext = {
+      agent: {
+        id: leadHomeAgent!.id,
+        workspaceId: "ws-1",
+        parentAgentId: null,
+        provider: "claude/sonnet",
+        cwd: "/tmp/default-workspace",
+        title: "Project Lead",
+        background: false,
+        metadata: { "paseo-bot.botId": lead.id, "paseo-bot.roleType": "project_lead" },
+      },
+      paseo: h.paseo,
+      signal: new AbortController().signal,
+    };
+    const leadInspectRes = await leadToolMap.get("thread_inspect")!.execute({ agentId: dispatched.agentId, limit: 5 }, leadToolCtx);
+    expect(leadInspectRes.isError).toBeUndefined();
+    const leadPostRes = await leadToolMap.get("outbox_post")!.execute(
+      {
+        kind: "delivered",
+        title: "Feature verified",
+        summary: "Reviewed worker output and tests passed",
+        threadAgentId: dispatched.agentId,
+        inboxId: inbox.id,
+      },
+      leadToolCtx,
+    );
+    expect(leadPostRes.isError).toBeUndefined();
+
     const latest = (await h.invokeRpc(botSnapshotRpc.name, {})) as BotHubSnapshot;
     const updatedInbox = latest.inbox.find((item) => item.id === inbox.id);
     expect(updatedInbox?.status).toBe("dispatched");
@@ -324,7 +387,97 @@ describe("end-to-end server plugin kernel", () => {
     const permOutbox = latest.outbox.find((item) => item.kind === "needs_decision" && item.inboxId === inbox.id);
     expect(permOutbox?.status).toBe("acked");
     expect(permOutbox?.ackNote).toBe("Resolved in Paseo");
-    expect(latest.outbox.some((item) => item.kind === "delivered" && item.inboxId === inbox.id)).toBe(true);
+    const deliveredOutbox = latest.outbox.find((item) => item.kind === "delivered" && item.inboxId === inbox.id);
+    expect(deliveredOutbox).toBeDefined();
+    expect(deliveredOutbox?.agentId).toBe(dispatched.agentId);
+
+    // Digest outbox to butler -> butler uses outbox_list and outbox_ack
+    const digestRes = (await h.invokeRpc(outboxDigestToButlerRpc.name, {})) as {
+      agentId: string;
+      botId: string;
+      itemCount: number;
+      promptPreview: string;
+    };
+    expect(digestRes.botId).toBe("butler");
+    expect(digestRes.itemCount).toBe(1);
+    expect(digestRes.promptPreview).toContain(deliveredOutbox!.id);
+
+    const butlerToolMap = new Map(butlerPatch.tools.map((t) => [t.name, t]));
+    const butlerToolCtx: AgentToolContext = {
+      agent: {
+        id: digestRes.agentId,
+        workspaceId: "ws-1",
+        parentAgentId: null,
+        provider: "claude/sonnet",
+        cwd: "/tmp/default-workspace",
+        title: "管家总管",
+        background: false,
+        metadata: { "paseo-bot.botId": "butler", "paseo-bot.roleType": "butler" },
+      },
+      paseo: {} as unknown as PaseoApi,
+      signal: new AbortController().signal,
+    };
+
+    const outboxListRes = await butlerToolMap.get("outbox_list")!.execute({ includeAcked: false, limit: 20 }, butlerToolCtx);
+    expect((outboxListRes.structuredContent as { items: Array<{ id: string }> }).items.map((i) => i.id)).toEqual([
+      deliveredOutbox!.id,
+    ]);
+
+    const outboxAckRes = await butlerToolMap.get("outbox_ack")!.execute(
+      { id: deliveredOutbox!.id, note: "Summarized to user" },
+      butlerToolCtx,
+    );
+    expect(outboxAckRes.isError).toBeUndefined();
+
+    // Runtime toggle: disable Paseo thread backend -> blocks dispatch/inspect, keeps bot sessions/inbox/outbox/digest alive
+    const offSettings = (await h.invokeRpc(settingsUpdateRpc.name, { paseoEnabled: false })) as HubSettings;
+    expect(offSettings.paseoEnabled).toBe(false);
+
+    await expect(
+      h.invokeRpc(threadDispatchRpc.name, {
+        botId: lead.id,
+        title: "Blocked dispatch",
+        prompt: "Should reject",
+        worktree: false,
+      }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.PERMISSION_DENIED });
+
+    await expect(
+      h.invokeRpc(threadInspectRpc.name, { agentId: dispatched.agentId, limit: 5 }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.PERMISSION_DENIED });
+
+    const pureBotSession = (await h.invokeRpc(botOpenSessionRpc.name, { botId: "companion" })) as { agentId: string };
+    expect(pureBotSession.agentId).toBeTruthy();
+
+    const pureBotInbox = (await h.invokeRpc(inboxAddRpc.name, {
+      rawText: "Thought captured in pure Bot mode",
+      source: "user",
+      tags: [],
+    })) as { id: string };
+    expect(pureBotInbox.id).toMatch(/^in-/);
+
+    const pureBotDispatchTool = await butlerToolMap.get("bot_dispatch_thread")!.execute(
+      { botId: lead.id, title: "Tool blocked", prompt: "Should fail", worktree: false },
+      butlerToolCtx,
+    );
+    expect(pureBotDispatchTool.isError).toBe(true);
+
+    // Re-enable Paseo thread backend -> restores dispatch and inspect
+    const onSettings = (await h.invokeRpc(settingsUpdateRpc.name, { paseoEnabled: true })) as HubSettings;
+    expect(onSettings.paseoEnabled).toBe(true);
+
+    const restoredDispatch = (await h.invokeRpc(threadDispatchRpc.name, {
+      botId: lead.id,
+      title: "Restored dispatch",
+      prompt: "Run again",
+      worktree: false,
+    })) as { agentId: string };
+    const restoredInspect = (await h.invokeRpc(threadInspectRpc.name, {
+      agentId: restoredDispatch.agentId,
+      limit: 5,
+    })) as { agentId: string };
+    expect(restoredInspect.agentId).toBe(restoredDispatch.agentId);
+
     expect(sub.snapshots.length).toBeGreaterThan(2);
 
     sub.abort();

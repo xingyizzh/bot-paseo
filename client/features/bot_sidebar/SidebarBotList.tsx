@@ -15,12 +15,13 @@ function resolveDotColor(status: DotStatus | null, theme: AppTheme): string | nu
 
 function computeBotDotStatus(
   bot: BotRecord,
+  threadsEnabled: boolean,
   attentionIds: ReadonlySet<string>,
   runningIds: ReadonlySet<string>,
   threadsByBotId: ReadonlyMap<string, readonly DispatchedThread[]>,
   unackedOutboxByBotId: ReadonlyMap<string, readonly OutboxItem[]>,
 ): DotStatus | null {
-  const threads = threadsByBotId.get(bot.id) ?? [];
+  const threads = threadsEnabled ? (threadsByBotId.get(bot.id) ?? []) : [];
   const outboxes = unackedOutboxByBotId.get(bot.id) ?? [];
   const needsAttention =
     (bot.agentId ? attentionIds.has(bot.agentId) : false) ||
@@ -171,6 +172,7 @@ export function SidebarBotList({
   theme,
   isLoading,
   hasSnapshot,
+  threadsEnabled,
   heroBots,
   nonHeroBots,
   sortedSections,
@@ -188,6 +190,7 @@ export function SidebarBotList({
   theme: AppTheme;
   isLoading: boolean;
   hasSnapshot: boolean;
+  threadsEnabled: boolean;
   heroBots: readonly BotRecord[];
   nonHeroBots: readonly BotRecord[];
   sortedSections: readonly BotSection[];
@@ -203,11 +206,33 @@ export function SidebarBotList({
   onToggleSection(section: BotSection, nextCollapsed: boolean): void;
 }) {
   const statusOf = (bot: BotRecord) =>
-    computeBotDotStatus(bot, attentionIds, runningIds, threadsByBotId, unackedOutboxByBotId);
+    computeBotDotStatus(bot, threadsEnabled, attentionIds, runningIds, threadsByBotId, unackedOutboxByBotId);
 
-  const renderRow = (bot: BotRecord) => (
-    <BotRowItem key={bot.id} bot={bot} theme={theme} active={Boolean(bot.agentId && activeAgentId === bot.agentId)} opening={openingBotId === bot.id} dotColor={resolveDotColor(statusOf(bot), theme)} statusText={bot.bio || bot.defaultCwd} onPress={() => onOpenBot(bot)} />
-  );
+  const renderRow = (bot: BotRecord) => {
+    const baseText = bot.bio || bot.defaultCwd;
+    const threads = threadsByBotId.get(bot.id) ?? [];
+    const runningCount = threads.filter(
+      (t) => runningIds.has(t.agentId) || t.status === "running" || t.status === "initializing",
+    ).length;
+    const rowStatusText =
+      threadsEnabled && threads.length > 0
+        ? runningCount > 0
+          ? `运行中 ${runningCount} 个线程 · ${baseText}`
+          : `${threads.length} 个关联线程 · ${baseText}`
+        : baseText;
+    return (
+      <BotRowItem
+        key={bot.id}
+        bot={bot}
+        theme={theme}
+        active={Boolean(bot.agentId && activeAgentId === bot.agentId)}
+        opening={openingBotId === bot.id}
+        dotColor={resolveDotColor(statusOf(bot), theme)}
+        statusText={rowStatusText}
+        onPress={() => onOpenBot(bot)}
+      />
+    );
+  };
 
   return (
     <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 12, gap: 14 }}>

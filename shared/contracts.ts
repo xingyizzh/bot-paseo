@@ -97,9 +97,27 @@ export const DispatchedThreadSchema = z.object({
 });
 export type DispatchedThread = z.infer<typeof DispatchedThreadSchema>;
 
+export const HubSettingsSchema = z.object({
+  paseoEnabled: z.boolean().default(true),
+});
+export type HubSettings = z.infer<typeof HubSettingsSchema>;
+
+export const ExecutionCapabilitiesSchema = z.object({
+  threads: z.boolean(),
+  worktree: z.boolean(),
+  inspect: z.boolean(),
+});
+export type ExecutionCapabilities = z.infer<typeof ExecutionCapabilitiesSchema>;
+
+export function resolveExecutionCapabilities(settings?: HubSettings | null): ExecutionCapabilities {
+  const enabled = settings?.paseoEnabled ?? true;
+  return { threads: enabled, worktree: enabled, inspect: enabled };
+}
+
 export const PersistedHubStateSchema = z.object({
   version: z.literal(1),
   revision: z.number().int().nonnegative(),
+  settings: HubSettingsSchema.default({ paseoEnabled: true }),
   bots: z.array(BotRecordSchema),
   sections: z.array(BotSectionSchema),
   inbox: z.array(InboxItemSchema),
@@ -146,6 +164,7 @@ export function createEmptyHubState(now = new Date().toISOString()): PersistedHu
   return {
     version: 1,
     revision: 0,
+    settings: { paseoEnabled: true },
     bots: [],
     sections: [],
     inbox: [],
@@ -160,6 +179,8 @@ export const PASEO_BOT_TOOL_NAMES = [
   "inbox_capture",
   "inbox_list",
   "outbox_post",
+  "outbox_list",
+  "outbox_ack",
   "bot_dispatch_thread",
   "thread_inspect",
 ] as const;
@@ -192,6 +213,20 @@ export function sortOutboxItems(items: readonly OutboxItem[]): OutboxItem[] {
     if (rankDiff !== 0) return rankDiff;
     return b.createdAt.localeCompare(a.createdAt);
   });
+}
+
+export function filterOutboxItems(
+  items: readonly OutboxItem[],
+  opts?: { includeAcked?: boolean; kind?: OutboxKind; limit?: number },
+): OutboxItem[] {
+  const includeAcked = opts?.includeAcked ?? false;
+  const filtered = items.filter((item) => {
+    if (!includeAcked && item.status === "acked") return false;
+    if (opts?.kind && item.kind !== opts.kind) return false;
+    return true;
+  });
+  const sorted = sortOutboxItems(filtered);
+  return opts?.limit !== undefined ? sorted.slice(0, Math.max(0, opts.limit)) : sorted;
 }
 
 export interface AckEventBase<Result = void> {
@@ -230,5 +265,16 @@ export interface OutboxEnqueueEvent extends AckEventBase<OutboxItem> {
 export interface OutboxAckByAgentEvent extends AckEventBase<number> {
   agentId: string;
   kind?: OutboxKind;
+  note?: string;
+}
+
+export interface OutboxListEvent extends AckEventBase<OutboxItem[]> {
+  includeAcked?: boolean;
+  kind?: OutboxKind;
+  limit?: number;
+}
+
+export interface OutboxAckByIdEvent extends AckEventBase<OutboxItem> {
+  id: string;
   note?: string;
 }

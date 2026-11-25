@@ -5,11 +5,13 @@ import { defineRpc } from "@getpaseo/plugin";
 import type { PluginHookContext, PluginHooks, PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
-import type { PaseoPort } from "../../server/adapters/paseo-adapter";
+import type { ExecutionPort } from "../../server/adapters/execution-port";
+import { createNullExecutionAdapter } from "../../server/adapters/null-execution";
 import { ServerKernel, type ServerFeature } from "../../server/core/kernel";
 import { createLogger } from "../../server/core/logger";
 import { createJsonStateStore } from "../../server/core/store";
 import { botRegistryFeature } from "../../server/features/bot_registry/adapter";
+import { ERROR_CODES } from "../../shared/contracts";
 import { botSnapshotRpc, botUpsertRpc } from "../../shared/rpc";
 
 const tempDirs: string[] = [];
@@ -78,7 +80,9 @@ describe("microkernel dual-unit stateful isolation & resilience", () => {
     const { server, handlers } = createMockContext();
     const logger = createLogger("test");
     const store = createJsonStateStore(dir);
-    const adapter: PaseoPort = {
+    const adapter: ExecutionPort = {
+      kind: "paseo",
+      capabilities: { threads: true, worktree: true, inspect: true },
       async resolveDefaultWorkspaceDir() {
         return dir;
       },
@@ -205,5 +209,62 @@ describe("microkernel dual-unit stateful isolation & resilience", () => {
     expect(hooks.has("agent.turn.after")).toBe(false);
 
     kernel.dispose();
+  });
+
+  it("provides pure-Bot fallback behavior via createNullExecutionAdapter", async () => {
+    const nullAdapter = createNullExecutionAdapter();
+    expect(nullAdapter.kind).toBe("null");
+    expect(nullAdapter.capabilities).toEqual({ threads: false, worktree: false, inspect: false });
+    expect(await nullAdapter.resolveDefaultWorkspaceDir({}, "/tmp/fallback")).toBe("/tmp/fallback");
+    await expect(nullAdapter.reloadBotAgent({}, "a-1")).resolves.toBeUndefined();
+    await expect(
+      nullAdapter.dispatchThread({}, {
+        bot: {
+          id: "b1",
+          name: "Bot",
+          roleType: "butler",
+          bio: "",
+          personaPrompt: "",
+          iconName: "Crown",
+          avatarColor: "#3B66F5",
+          provider: "claude/sonnet",
+          defaultCwd: "/tmp",
+          permissionMode: "workspace",
+          sectionId: null,
+          pinned: true,
+          agentId: null,
+          archivedAt: null,
+          createdAt: "2026-11-25T00:00:00Z",
+          updatedAt: "2026-11-25T00:00:00Z",
+        },
+        title: "T",
+        prompt: "P",
+        cwd: "/tmp",
+        worktree: false,
+      }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.PERMISSION_DENIED });
+    await expect(nullAdapter.inspectThread({}, "a-1", 5)).rejects.toMatchObject({
+      code: ERROR_CODES.PERMISSION_DENIED,
+    });
+    await expect(
+      nullAdapter.ensureBotAgent({}, {
+        id: "b1",
+        name: "Bot",
+        roleType: "butler",
+        bio: "",
+        personaPrompt: "",
+        iconName: "Crown",
+        avatarColor: "#3B66F5",
+        provider: "claude/sonnet",
+        defaultCwd: "/tmp",
+        permissionMode: "workspace",
+        sectionId: null,
+        pinned: true,
+        agentId: null,
+        archivedAt: null,
+        createdAt: "2026-11-25T00:00:00Z",
+        updatedAt: "2026-11-25T00:00:00Z",
+      }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.ADAPTER_FAILURE });
   });
 });

@@ -240,3 +240,14 @@ export function bindBotAgent(
     bot,
   };
 }
+
+export function updateHubSettings(
+  state: PersistedHubState,
+  input: { paseoEnabled: boolean },
+): PersistedHubState {
+  if (state.settings.paseoEnabled === input.paseoEnabled) return state;
+  return {
+    ...state,
+    settings: { ...state.settings, paseoEnabled: input.paseoEnabled },
+  };
+}

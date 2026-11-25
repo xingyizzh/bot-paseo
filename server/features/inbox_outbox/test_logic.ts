@@ -7,7 +7,11 @@ import {
   createEmptyHubState,
   DomainError,
   ERROR_CODES,
+  filterOutboxItems,
   type OutboxAckByAgentEvent,
+  type OutboxAckByIdEvent,
+  type OutboxItem,
+  type OutboxListEvent,
 } from "../../../shared/contracts";
 import {
   inboxAddRpc,
@@ -246,6 +250,21 @@ describe("inbox_outbox pure logic", () => {
     const nextGenerated = addInboxItem(first.nextState, { rawText: "new thought" }, "2026-11-25T13:10:00Z");
     expect(nextGenerated.item.id).toBe("in-20261125-0002");
   });
+
+  it("filters outbox items by ack status, kind, and limit", () => {
+    let state = createEmptyHubState("2026-11-25T00:00:00Z");
+    state = addOutboxItem(state, { kind: "delivered", title: "D1", summary: "s", status: "delivered" }, "2026-11-25T10:00:00Z").nextState;
+    state = addOutboxItem(state, { kind: "needs_decision", title: "N1", summary: "s", status: "pending" }, "2026-11-25T09:00:00Z").nextState;
+    state = addOutboxItem(state, { kind: "blocked", title: "B1", summary: "s", status: "pending" }, "2026-11-25T11:00:00Z").nextState;
+    state = addOutboxItem(state, { kind: "delivered", title: "D2-acked", summary: "s", status: "acked" }, "2026-11-25T12:00:00Z").nextState;
+
+    expect(filterOutboxItems(state.outbox).map((i) => i.title)).toEqual(["N1", "B1", "D1"]);
+    expect(filterOutboxItems(state.outbox, { includeAcked: true, kind: "delivered" }).map((i) => i.title)).toEqual([
+      "D1",
+      "D2-acked",
+    ]);
+    expect(filterOutboxItems(state.outbox, { limit: 2 }).map((i) => i.title)).toEqual(["N1", "B1"]);
+  });
 });
 
 describe("inbox_outbox adapter RPC & event bus", () => {
@@ -316,9 +335,42 @@ describe("inbox_outbox adapter RPC & event bus", () => {
     });
     expect(ackedCount).toBe(1);
 
+    const listedViaBus = await kernel.events.emitWithAck<OutboxItem[], OutboxListEvent>("outbox.list", {
+      includeAcked: true,
+      limit: 10,
+    });
+    expect(listedViaBus).toHaveLength(2);
+
+    const addedUnacked = await new Promise<{ id: string }>((resolve, reject) => {
+      kernel.events.emit("outbox.enqueue", {
+        kind: "delivered",
+        title: "Report ready",
+        summary: "Summary ready",
+        status: "delivered",
+        resolve,
+        reject,
+      });
+    });
+
+    const ackedViaBus = await kernel.events.emitWithAck<OutboxItem, OutboxAckByIdEvent>("outbox.ack", {
+      id: addedUnacked.id,
+      note: "Reported to user",
+    });
+    expect(ackedViaBus?.status).toBe("acked");
+    expect(ackedViaBus?.ackNote).toBe("Reported to user");
+
+    const unackedViaBus = await kernel.events.emitWithAck<OutboxItem[], OutboxListEvent>("outbox.list", {
+      includeAcked: false,
+    });
+    expect(unackedViaBus).toEqual([]);
+
+    await expect(
+      kernel.events.emitWithAck<OutboxItem, OutboxAckByIdEvent>("outbox.ack", { id: "out-missing" }),
+    ).rejects.toThrow(/Outbox item not found/);
+
     const finalState = kernel.store.read();
     expect(finalState.inbox.find((i) => i.id === captured.id)?.status).toBe("dispatched");
-    expect(finalState.outbox).toHaveLength(2);
+    expect(finalState.outbox).toHaveLength(3);
     expect(finalState.outbox[1].status).toBe("acked");
     expect(finalState.outbox[1].ackNote).toBe("Resolved in Paseo");
     expect(revisions.length).toBeGreaterThanOrEqual(8);

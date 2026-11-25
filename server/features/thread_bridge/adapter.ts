@@ -1,219 +1,59 @@
-import type { PaseoApi } from "@getpaseo/client";
-import {
-  defineAgentTool,
-  type AgentToolContext,
-  type AgentToolDefinition,
-  type AgentToolResult,
-  type PluginHookContext,
-} from "@getpaseo/plugin/server";
-import type { z } from "zod";
+import type { PluginHookContext } from "@getpaseo/plugin/server";
 import {
   DomainError,
   ERROR_CODES,
-  type BotRecord,
-  type DispatchedThread,
-  type InboxCaptureEvent,
-  type InboxItem,
-  type InboxMarkDispatchedEvent,
+  filterOutboxItems,
   type OutboxAckByAgentEvent,
   type OutboxEnqueueEvent,
   type OutboxItem,
 } from "../../../shared/contracts";
-import { threadDispatchRpc, threadInspectRpc } from "../../../shared/rpc";
-import type { PaseoPort } from "../../adapters/paseo-adapter";
+import { outboxDigestToButlerRpc, threadDispatchRpc, threadInspectRpc } from "../../../shared/rpc";
+import type { ExecutionPort } from "../../adapters/execution-port";
 import type { FeatureManifest, ServerFeature, ServerKernel } from "../../core/kernel";
+import { buildOutboxDigestPrompt, buildWorkerReviewPrompt } from "./digest";
 import {
   buildAgentOpenPatch,
   buildPermissionOutboxPayload,
   buildTurnOutboxPayload,
-  canInspectThread,
-  checkToolAllowed,
-  filterInboxForTool,
-  recordDispatchedThread,
-  resolveBotByAgent,
-  summarizeBotsForTool,
   updateDispatchedThreadStatus,
 } from "./logic";
 import {
-  BotListToolInput,
-  DispatchThreadToolInput,
-  InboxCaptureToolInput,
-  InboxListToolInput,
-  InspectThreadToolInput,
-  OutboxPostToolInput,
-} from "./schema";
+  buildBridgeTools,
+  executeDispatch,
+  isThreadsEnabled,
+  THREAD_BRIDGE_ID,
+  THREADS_DISABLED_MSG,
+} from "./tools";
 
 export const THREAD_BRIDGE_MANIFEST: FeatureManifest = {
-  id: "thread_bridge",
+  id: THREAD_BRIDGE_ID,
   name: "Thread Bridge & Role Guard",
 };
 
-function guardedTool<Input extends z.ZodType>(
+async function bindBotAgentIfChanged(
   kernel: ServerKernel,
-  spec: {
-    name: string;
-    description: string;
-    input: Input;
-    run(input: z.output<Input>, ctx: AgentToolContext): AgentToolResult | Promise<AgentToolResult>;
-  },
-): AgentToolDefinition {
-  return defineAgentTool({
-    name: spec.name,
-    description: spec.description,
-    input: spec.input,
-    execute(input, ctx) {
-      const denied = checkToolAllowed(kernel.store.read().bots, ctx.agent, spec.name);
-      return denied ? { text: denied, isError: true } : spec.run(input, ctx);
+  featureId: string,
+  botId: string,
+  nextAgentId: string,
+  currentAgentId: string | null,
+): Promise<void> {
+  if (nextAgentId === currentAgentId) return;
+  const now = new Date().toISOString();
+  await kernel.commitState(featureId, (latest) => ({
+    nextState: {
+      ...latest,
+      bots: latest.bots.map((b) => (b.id === botId ? { ...b, agentId: nextAgentId, updatedAt: now } : b)),
     },
-  });
+    result: null,
+  }));
 }
 
-async function executeDispatch(
-  kernel: ServerKernel,
-  adapter: PaseoPort,
-  paseo: PaseoApi,
-  params: {
-    botId: string;
-    title: string;
-    prompt: string;
-    cwd?: string;
-    worktree: boolean;
-    inboxId: string | null;
-    callerBot?: BotRecord;
-  },
-): Promise<{ thread: DispatchedThread; agentId: string }> {
-  const id = THREAD_BRIDGE_MANIFEST.id;
-  const targetBot = kernel.store.read().bots.find((entry) => entry.id === params.botId);
-  if (!targetBot) throw new DomainError(id, "dispatchThread", ERROR_CODES.NOT_FOUND, `Bot not found: ${params.botId}`);
-  if (targetBot.roleType === "companion") {
-    throw new DomainError(id, "dispatchThread", ERROR_CODES.PERMISSION_DENIED, "Companion bots cannot dispatch worker threads");
-  }
-  if (params.callerBot?.roleType === "project_lead" && params.callerBot.id !== targetBot.id) {
-    throw new DomainError(id, "dispatchThread", ERROR_CODES.PERMISSION_DENIED, "Project lead can only dispatch worker threads under itself");
-  }
-
-  const cwd = params.cwd?.trim() || targetBot.defaultCwd;
-  const created = await adapter.dispatchThread(paseo, { bot: targetBot, title: params.title, prompt: params.prompt, cwd, worktree: params.worktree });
-  const thread = await kernel.commitState(id, (state) => {
-    const { nextState, thread: saved } = recordDispatchedThread(state, {
-      agentId: created.agentId,
-      botId: targetBot.id,
-      title: params.title,
-      cwd,
-      worktree: params.worktree,
-      inboxId: params.inboxId,
-      status: "running",
-    });
-    return { nextState, result: saved };
-  });
-
-  if (params.inboxId) {
-    await kernel.events.emitWithAck<void, InboxMarkDispatchedEvent>("inbox.markDispatched", {
-      inboxId: params.inboxId,
-      botId: targetBot.id,
-      agentId: created.agentId,
-      title: params.title,
-    });
-  }
-  return { thread, agentId: created.agentId };
-}
-
-function buildBridgeTools(kernel: ServerKernel, adapter: PaseoPort): AgentToolDefinition[] {
-  return [
-    guardedTool(kernel, {
-      name: "bot_list",
-      description: "List configured bots with their roleType, bio, defaultCwd, and agentId.",
-      input: BotListToolInput,
-      run(input) {
-        const bots = summarizeBotsForTool(kernel.store.read().bots, input.includeArchived);
-        return { text: JSON.stringify(bots, null, 2), structuredContent: { bots } };
-      },
-    }),
-    guardedTool(kernel, {
-      name: "inbox_capture",
-      description: "Silently capture a raw thought, task, or idea verbatim into the Inbox.",
-      input: InboxCaptureToolInput,
-      async run(input, ctx) {
-        const role = ctx.agent.metadata?.["paseo-bot.roleType"];
-        const source = role === "companion" ? "companion" : role === "butler" ? "butler" : "user";
-        const item = await kernel.events.emitWithAck<InboxItem, InboxCaptureEvent>("inbox.capture", {
-          rawText: input.rawText,
-          source,
-          targetBotId: input.targetBotId ?? null,
-          targetProject: input.targetProject ?? null,
-          tags: input.tags,
-          note: input.note,
-        });
-        return item ? { text: `Captured inbox item ${item.id}`, structuredContent: item } : { text: "Queued into Inbox" };
-      },
-    }),
-    guardedTool(kernel, {
-      name: "inbox_list",
-      description: "List Inbox items (optionally filtered by status) for triage or dispatch.",
-      input: InboxListToolInput,
-      run(input) {
-        const items = filterInboxForTool(kernel.store.read().inbox, input.status, input.limit);
-        return { text: JSON.stringify(items, null, 2), structuredContent: { items } };
-      },
-    }),
-    guardedTool(kernel, {
-      name: "outbox_post",
-      description: "Post a concise needs_decision, blocked, or delivered item to the Outbox.",
-      input: OutboxPostToolInput,
-      async run(input, ctx) {
-        const botId = typeof ctx.agent.metadata?.["paseo-bot.botId"] === "string" ? ctx.agent.metadata["paseo-bot.botId"] : null;
-        const item = await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", {
-          kind: input.kind,
-          title: input.title,
-          summary: input.summary,
-          status: input.kind === "delivered" ? "delivered" : "pending",
-          botId,
-          agentId: ctx.agent.id,
-          threadLink: input.threadLink ?? "",
-          inboxId: input.inboxId ?? null,
-        });
-        return item ? { text: `Posted outbox item ${item.id}`, structuredContent: item } : { text: "Queued into Outbox" };
-      },
-    }),
-    guardedTool(kernel, {
-      name: "bot_dispatch_thread",
-      description: "Dispatch an isolated worker thread under a target bot and optionally link an Inbox item.",
-      input: DispatchThreadToolInput,
-      async run(input, ctx) {
-        const callerBot = resolveBotByAgent(kernel.store.read().bots, ctx.agent);
-        try {
-          const result = await executeDispatch(kernel, adapter, ctx.paseo, {
-            botId: input.botId ?? callerBot?.id ?? "",
-            title: input.title,
-            prompt: input.prompt,
-            cwd: input.cwd,
-            worktree: input.worktree,
-            inboxId: input.inboxId ?? null,
-            callerBot,
-          });
-          return { text: `Dispatched thread ${result.agentId} (${result.thread.title})`, structuredContent: result };
-        } catch (err) {
-          return { text: err instanceof Error ? err.message : String(err), isError: true };
-        }
-      },
-    }),
-    guardedTool(kernel, {
-      name: "thread_inspect",
-      description: "Read a worker thread's live status and recent timeline messages directly.",
-      input: InspectThreadToolInput,
-      async run(input, ctx) {
-        const state = kernel.store.read();
-        const callerBot = resolveBotByAgent(state.bots, ctx.agent);
-        const scopeErr = canInspectThread(state, callerBot, input.agentId);
-        if (scopeErr) return { text: scopeErr, isError: true };
-        const result = await adapter.inspectThread(ctx.paseo, input.agentId, input.limit);
-        return { text: JSON.stringify(result, null, 2), structuredContent: result };
-      },
-    }),
-  ];
-}
-
-async function readTurnCompletionSummary(ctx: PluginHookContext, agentId: string, turnId: string | null, fallback: string): Promise<string> {
+async function readTurnCompletionSummary(
+  ctx: PluginHookContext,
+  agentId: string,
+  turnId: string | null,
+  fallback: string,
+): Promise<string> {
   if (!turnId || !ctx.paseo?.agents?.ref) return fallback;
   try {
     const page = await ctx.paseo.agents.ref(agentId).timeline.refetch({ direction: "tail", limit: 5, wholeTurns: true });
@@ -228,7 +68,7 @@ async function readTurnCompletionSummary(ctx: PluginHookContext, agentId: string
 export const threadBridgeFeature: ServerFeature = {
   manifest: THREAD_BRIDGE_MANIFEST,
   register(kernel) {
-    const adapter = kernel.adapter as PaseoPort;
+    const adapter = kernel.adapter as ExecutionPort;
     const id = THREAD_BRIDGE_MANIFEST.id;
     const tools = buildBridgeTools(kernel, adapter);
 
@@ -243,10 +83,46 @@ export const threadBridgeFeature: ServerFeature = {
       }),
     );
 
-    kernel.handleRpc(id, threadInspectRpc, (input, ctx) => adapter.inspectThread(ctx.paseo, input.agentId, input.limit));
+    kernel.handleRpc(id, threadInspectRpc, (input, ctx) => {
+      if (!isThreadsEnabled(kernel, adapter)) {
+        throw new DomainError(id, "inspectThread", ERROR_CODES.PERMISSION_DENIED, THREADS_DISABLED_MSG);
+      }
+      return adapter.inspectThread(ctx.paseo, input.agentId, input.limit);
+    });
+
+    kernel.handleRpc(id, outboxDigestToButlerRpc, async (input, ctx) => {
+      const state = kernel.store.read();
+      const butler = input.botId
+        ? state.bots.find((b) => b.id === input.botId)
+        : state.bots.find((b) => b.roleType === "butler" && b.archivedAt === null);
+      if (!butler) {
+        throw new DomainError(id, "digestToButler", ERROR_CODES.NOT_FOUND, input.botId ? `Bot not found: ${input.botId}` : "No active butler bot found");
+      }
+      if (butler.archivedAt !== null) {
+        throw new DomainError(id, "digestToButler", ERROR_CODES.PERMISSION_DENIED, `Cannot digest outbox to archived bot: ${butler.id}`);
+      }
+      if (butler.roleType === "companion") {
+        throw new DomainError(id, "digestToButler", ERROR_CODES.PERMISSION_DENIED, "Companion bots cannot receive outbox digests");
+      }
+
+      const unacked = filterOutboxItems(state.outbox, { includeAcked: false, limit: 30 });
+      if (unacked.length === 0) {
+        throw new DomainError(id, "digestToButler", ERROR_CODES.VALIDATION, "当前没有未汇报的 Outbox 条目");
+      }
+
+      const prompt = buildOutboxDigestPrompt(unacked, state.bots, state.threads, isThreadsEnabled(kernel, adapter));
+      const ensured = await adapter.ensureBotAgent(ctx.paseo, butler, prompt);
+      await bindBotAgentIfChanged(kernel, id, butler.id, ensured.agentId, butler.agentId);
+      return {
+        agentId: ensured.agentId,
+        botId: butler.id,
+        itemCount: unacked.length,
+        promptPreview: prompt.slice(0, 200),
+      };
+    });
 
     const offOpen = kernel.addHook("agent.open.before", async (payload) =>
-      buildAgentOpenPatch(payload.request, kernel.store.read().bots, tools),
+      buildAgentOpenPatch(payload.request, kernel.store.read().bots, tools, isThreadsEnabled(kernel, adapter)),
     );
     const offPerm = kernel.addHook("agent.permission.before", async (payload) => {
       const matched = kernel.store.read().threads.find((entry) => entry.agentId === payload.agent.id);
@@ -263,14 +139,39 @@ export const threadBridgeFeature: ServerFeature = {
     const offTurn = kernel.addHook("agent.turn.after", async (payload, ctx) => {
       if (payload.agent.metadata?.["paseo-bot.kind"] !== "worker-thread") return;
       if (payload.outcome.kind !== "completed" && payload.outcome.kind !== "failed") return;
-      const matched = kernel.store.read().threads.find((entry) => entry.agentId === payload.agent.id);
+      const latestState = kernel.store.read();
+      const matched = latestState.threads.find((entry) => entry.agentId === payload.agent.id);
       const threadTitle = payload.agent.title?.trim() || matched?.title || payload.agent.id;
-      const status = payload.outcome.kind;
-      await kernel.commitState(id, (state) => ({ nextState: updateDispatchedThreadStatus(state, payload.agent.id, status), result: null }));
-      const summary = payload.outcome.kind === "completed"
+      await kernel.commitState(id, (state) => ({
+        nextState: updateDispatchedThreadStatus(state, payload.agent.id, payload.outcome.kind),
+        result: null,
+      }));
+      const tailSummary = payload.outcome.kind === "completed"
         ? await readTurnCompletionSummary(ctx, payload.agent.id, payload.turnId, `Worker thread "${threadTitle}" completed its turn.`)
-        : "";
-      const outbox = buildTurnOutboxPayload(payload.agent, payload.outcome, threadTitle, matched?.inboxId ?? null, summary);
+        : (payload.outcome.error.message?.trim() || `Worker thread "${threadTitle}" failed.`);
+
+      const metaBotId = payload.agent.metadata?.["paseo-bot.botId"];
+      const ownerBotId = typeof metaBotId === "string" && metaBotId ? metaBotId : matched?.botId;
+      const ownerBot = ownerBotId ? kernel.store.read().bots.find((b) => b.id === ownerBotId) : undefined;
+      if (ownerBot && ownerBot.roleType === "project_lead" && ownerBot.archivedAt === null) {
+        try {
+          const reviewPrompt = buildWorkerReviewPrompt({
+            ownerBot,
+            threadTitle,
+            threadAgentId: payload.agent.id,
+            outcomeKind: payload.outcome.kind,
+            tailSummary,
+            inboxId: matched?.inboxId ?? null,
+          });
+          const ensured = await adapter.ensureBotAgent(ctx.paseo, ownerBot, reviewPrompt);
+          await bindBotAgentIfChanged(kernel, id, ownerBot.id, ensured.agentId, ownerBot.agentId);
+          return;
+        } catch (err) {
+          kernel.logger.warn(id, "turnAfter.notifyOwner", `Falling back to direct Outbox: ${String(err)}`);
+        }
+      }
+
+      const outbox = buildTurnOutboxPayload(payload.agent, payload.outcome, threadTitle, matched?.inboxId ?? null, tailSummary);
       if (outbox) await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", outbox);
     });
 

@@ -5,6 +5,7 @@ import { Pressable, Text, View } from "react-native";
 import {
   sortOutboxItems,
   type BotRecord,
+  type ExecutionCapabilities,
   type OutboxItem,
   type OutboxKind,
 } from "../../../shared/contracts";
@@ -20,22 +21,32 @@ function kindPresentation(kind: OutboxKind, theme: AppTheme): { label: string; c
 export function OutboxTab({
   items,
   bots,
+  capabilities,
   navigation,
   theme,
 }: {
   items: readonly OutboxItem[];
   bots: readonly BotRecord[];
+  capabilities: ExecutionCapabilities;
   navigation: PluginScreenProps["navigation"];
   theme: AppTheme;
 }) {
   const toast = useToast();
-  const { ackOutbox } = useHubActions();
+  const { ackOutbox, digestOutboxToButler } = useHubActions();
   const [archiveOpen, setArchiveOpen] = useState(false);
 
   const botMap = useMemo(() => new Map(bots.map((b) => [b.id, b])), [bots]);
   const sorted = useMemo(() => sortOutboxItems(items), [items]);
   const activeItems = useMemo(() => sorted.filter((i) => i.status !== "acked"), [sorted]);
   const ackedItems = useMemo(() => sorted.filter((i) => i.status === "acked"), [sorted]);
+  const urgentCount = useMemo(
+    () => activeItems.filter((i) => i.kind === "needs_decision" || i.kind === "blocked").length,
+    [activeItems],
+  );
+  const deliveredCount = useMemo(
+    () => activeItems.filter((i) => i.kind === "delivered").length,
+    [activeItems],
+  );
 
   const handleAck = async (item: OutboxItem) => {
     try {
@@ -43,6 +54,16 @@ export function OutboxTab({
       toast.show(`已确认收口「${item.title}」`, { variant: "success" });
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "确认失败");
+    }
+  };
+
+  const handleDigestToButler = async () => {
+    try {
+      const res = await digestOutboxToButler.mutateAsync({});
+      toast.show(`已交给管家整理汇报（${res.itemCount} 条）`, { variant: "success" });
+      navigation?.openAgent({ agentId: res.agentId });
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "交办管家整理失败");
     }
   };
 
@@ -71,7 +92,7 @@ export function OutboxTab({
         </Text>
 
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: 8, flexWrap: "wrap" }}>
-          {item.agentId && navigation ? (
+          {capabilities.inspect && item.agentId && navigation ? (
             <ActionButton
               label="穿透原线程"
               variant="secondary"
@@ -94,6 +115,34 @@ export function OutboxTab({
 
   return (
     <View style={{ gap: 12 }}>
+      {activeItems.length > 0 ? (
+        <SurfaceCard
+          theme={theme}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            flexWrap: "wrap",
+            gap: 10,
+          }}
+        >
+          <View style={{ flex: 1, minWidth: 200, gap: 3 }}>
+            <Text style={{ fontSize: 14, fontWeight: "700", color: theme.colors.foreground }}>
+              管家统一整理汇报
+            </Text>
+            <Text style={{ fontSize: 12.5, color: theme.colors.foregroundMuted, lineHeight: 18 }}>
+              {`待拍板/阻塞 ${urgentCount} 条 · 已交付 ${deliveredCount} 条 · 仅提炼结论与拍板项，不刷屏工作过程`}
+            </Text>
+          </View>
+          <ActionButton
+            label={digestOutboxToButler.isPending ? "交办中..." : "让管家整理汇报"}
+            disabled={digestOutboxToButler.isPending}
+            theme={theme}
+            onPress={() => void handleDigestToButler()}
+          />
+        </SurfaceCard>
+      ) : null}
+
       {activeItems.length === 0 ? (
         <SurfaceCard theme={theme} style={{ alignItems: "center", paddingVertical: 28, gap: 6 }}>
           <Icon name="CheckCircle2" size={24} color={semanticColor(theme, "success")} />

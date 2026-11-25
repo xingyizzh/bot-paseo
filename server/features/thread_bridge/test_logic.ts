@@ -15,17 +15,24 @@ import { afterEach, describe, expect, it } from "vitest";
 import { z } from "zod";
 import {
   createEmptyHubState,
+  ERROR_CODES,
   type BotRecord,
+  type DispatchedThread,
+  type OutboxAckByIdEvent,
+  type OutboxItem,
+  type OutboxListEvent,
 } from "../../../shared/contracts";
-import { threadDispatchRpc, threadInspectRpc } from "../../../shared/rpc";
-import type { PaseoPort } from "../../adapters/paseo-adapter";
+import { outboxDigestToButlerRpc, threadDispatchRpc, threadInspectRpc } from "../../../shared/rpc";
+import type { ExecutionPort } from "../../adapters/execution-port";
 import { ServerKernel } from "../../core/kernel";
 import { createLogger } from "../../core/logger";
 import { createJsonStateStore } from "../../core/store";
 import { threadBridgeFeature } from "./adapter";
+import { buildOutboxDigestPrompt, buildWorkerReviewPrompt } from "./digest";
 import {
   buildAgentOpenPatch,
   buildRolePolicy,
+  checkToolAllowed,
   recordDispatchedThread,
 } from "./logic";
 
@@ -155,14 +162,25 @@ describe("thread_bridge pure logic", () => {
       "inbox_capture",
       "inbox_list",
       "outbox_post",
+      "outbox_list",
+      "outbox_ack",
       "bot_dispatch_thread",
       "thread_inspect",
+    ]);
+    expect(buildRolePolicy(butler, false).allowedToolNames).toEqual([
+      "bot_list",
+      "inbox_capture",
+      "inbox_list",
+      "outbox_post",
+      "outbox_list",
+      "outbox_ack",
     ]);
     expect(buildRolePolicy(lead).allowedToolNames).toEqual([
       "bot_dispatch_thread",
       "thread_inspect",
       "outbox_post",
     ]);
+    expect(buildRolePolicy(lead, false).allowedToolNames).toEqual(["outbox_post"]);
 
     const requestToolsWithThirdParty = [
       makeTool("third_party_search"),
@@ -170,6 +188,8 @@ describe("thread_bridge pure logic", () => {
       makeTool("inbox_capture"),
       makeTool("inbox_list"),
       makeTool("outbox_post"),
+      makeTool("outbox_list"),
+      makeTool("outbox_ack"),
       makeTool("bot_dispatch_thread"),
       makeTool("thread_inspect"),
     ];
@@ -184,8 +204,26 @@ describe("thread_bridge pure logic", () => {
       "inbox_capture",
       "inbox_list",
       "outbox_post",
+      "outbox_list",
+      "outbox_ack",
       "bot_dispatch_thread",
       "thread_inspect",
+    ]);
+
+    const butlerDisabledPatch = buildAgentOpenPatch(
+      makeOpenRequest({ "paseo-bot.botId": "butler" }, requestToolsWithThirdParty),
+      [butler, lead],
+      [],
+      false,
+    );
+    expect(butlerDisabledPatch?.tools.map((t) => t.name)).toEqual([
+      "third_party_search",
+      "bot_list",
+      "inbox_capture",
+      "inbox_list",
+      "outbox_post",
+      "outbox_list",
+      "outbox_ack",
     ]);
 
     const leadPatch = buildAgentOpenPatch(
@@ -199,6 +237,123 @@ describe("thread_bridge pure logic", () => {
       "thread_inspect",
     ]);
     expect(leadPatch?.appendSystemPrompt?.some((line) => line.includes("/tmp/project-a"))).toBe(true);
+  });
+
+  it("rejects outbox_list/outbox_ack for non-butler roles and thread tools when threadsEnabled is false", () => {
+    const companion = makeBot({ id: "companion", roleType: "companion", permissionMode: "readonly" });
+    const butler = makeBot({ id: "butler", roleType: "butler" });
+    const lead = makeBot({ id: "lead-a", roleType: "project_lead" });
+    const bots = [companion, butler, lead];
+    const makeHookAgent = (botId: string, roleType: BotRecord["roleType"]): PluginHookAgent => ({
+      id: `${botId}-home`,
+      workspaceId: "ws-1",
+      parentAgentId: null,
+      provider: "claude/sonnet",
+      cwd: "/tmp/repo",
+      title: botId,
+      background: false,
+      metadata: { "paseo-bot.botId": botId, "paseo-bot.roleType": roleType },
+    });
+
+    expect(checkToolAllowed(bots, makeHookAgent("butler", "butler"), "outbox_list")).toBeNull();
+    expect(checkToolAllowed(bots, makeHookAgent("butler", "butler"), "outbox_ack")).toBeNull();
+    expect(checkToolAllowed(bots, makeHookAgent("companion", "companion"), "outbox_list")).toBeTruthy();
+    expect(checkToolAllowed(bots, makeHookAgent("companion", "companion"), "outbox_ack")).toBeTruthy();
+    expect(checkToolAllowed(bots, makeHookAgent("lead-a", "project_lead"), "outbox_list")).toBeTruthy();
+    expect(checkToolAllowed(bots, makeHookAgent("lead-a", "project_lead"), "outbox_ack")).toBeTruthy();
+    expect(checkToolAllowed(bots, makeHookAgent("butler", "butler"), "bot_dispatch_thread", false)).toContain("纯 Bot 模式");
+    expect(checkToolAllowed(bots, makeHookAgent("lead-a", "project_lead"), "thread_inspect", false)).toContain("纯 Bot 模式");
+  });
+
+  it("builds grouped Muse-style outbox digest prompt with optional thread references", () => {
+    const bots = [
+      makeBot({ id: "butler", name: "管家总管", roleType: "butler" }),
+      makeBot({ id: "lead-a", name: "后端主管", roleType: "project_lead" }),
+    ];
+    const threads: DispatchedThread[] = [
+      {
+        agentId: "worker-1",
+        botId: "lead-a",
+        title: "修复登录态",
+        cwd: "/tmp/repo",
+        worktree: true,
+        inboxId: null,
+        status: "completed",
+        createdAt: "2026-11-25T00:00:00Z",
+        updatedAt: "2026-11-25T00:00:00Z",
+      },
+    ];
+    const items: OutboxItem[] = [
+      {
+        id: "out-20261125-0001",
+        kind: "needs_decision",
+        title: "数据库选型",
+        summary: "需要确认使用 SQLite 还是 JSON。",
+        status: "pending",
+        botId: "lead-a",
+        agentId: "worker-1",
+        threadLink: "",
+        inboxId: null,
+        createdAt: "2026-11-25T01:00:00Z",
+        ackedAt: null,
+        ackNote: null,
+      },
+      {
+        id: "out-20261125-0002",
+        kind: "blocked",
+        title: "缺少 API Key",
+        summary: "等待配置测试环境变量。",
+        status: "pending",
+        botId: "lead-a",
+        agentId: "worker-2",
+        threadLink: "",
+        inboxId: null,
+        createdAt: "2026-11-25T02:00:00Z",
+        ackedAt: null,
+        ackNote: null,
+      },
+      {
+        id: "out-20261125-0003",
+        kind: "delivered",
+        title: "登录模块完成",
+        summary: "单测全部通过。",
+        status: "delivered",
+        botId: "lead-a",
+        agentId: "worker-1",
+        threadLink: "",
+        inboxId: null,
+        createdAt: "2026-11-25T03:00:00Z",
+        ackedAt: null,
+        ackNote: null,
+      },
+    ];
+
+    const promptWithThreads = buildOutboxDigestPrompt(items, bots, threads, true);
+    expect(promptWithThreads).toContain("[out-20261125-0001]");
+    expect(promptWithThreads).toContain("后端主管");
+    expect(promptWithThreads).toContain("修复登录态");
+    expect(promptWithThreads).toContain("worker-2");
+    expect(promptWithThreads).toContain("outbox_ack");
+    expect(promptWithThreads.indexOf("needs_decision")).toBeLessThan(promptWithThreads.indexOf("blocked"));
+    expect(promptWithThreads.indexOf("blocked")).toBeLessThan(promptWithThreads.indexOf("delivered"));
+
+    const promptNoThreads = buildOutboxDigestPrompt(items, bots, threads, false);
+    expect(promptNoThreads).not.toContain("修复登录态");
+    expect(promptNoThreads).not.toContain("worker-2");
+    expect(promptNoThreads).toContain("[out-20261125-0003]");
+
+    const reviewPrompt = buildWorkerReviewPrompt({
+      ownerBot: bots[1]!,
+      threadTitle: "修复登录态",
+      threadAgentId: "worker-1",
+      outcomeKind: "completed",
+      tailSummary: "All auth tests green",
+      inboxId: "in-20261125-0001",
+    });
+    expect(reviewPrompt).toContain("后端主管");
+    expect(reviewPrompt).toContain('thread_inspect(agentId="worker-1")');
+    expect(reviewPrompt).toContain('threadAgentId="worker-1"');
+    expect(reviewPrompt).toContain('inboxId="in-20261125-0001"');
   });
 
   it("ignores non-bot agents, unknown bots, and worker-thread sessions in buildAgentOpenPatch", () => {
@@ -303,12 +458,16 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       result: null,
     }));
 
-    const adapter: PaseoPort = {
+    const ensuredCalls: Array<{ botId: string; prompt: string }> = [];
+    const adapter: ExecutionPort = {
+      kind: "paseo",
+      capabilities: { threads: true, worktree: true, inspect: true },
       async resolveDefaultWorkspaceDir() {
         return dir;
       },
-      async ensureBotAgent() {
-        return { agentId: "home-1", created: true };
+      async ensureBotAgent(_paseo, bot, initialPrompt) {
+        if (initialPrompt) ensuredCalls.push({ botId: bot.id, prompt: initialPrompt });
+        return { agentId: `${bot.id}-home`, created: true };
       },
       async reloadBotAgent() {},
       async dispatchThread() {
@@ -326,6 +485,21 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
     const dispatchedInbox: string[] = [];
     const outboxEvents: Array<{ kind: string; agentId?: string | null }> = [];
     const ackedByAgent: Array<{ agentId: string; kind?: string; note?: string }> = [];
+    const ackedByIds: Array<{ id: string; note?: string }> = [];
+    const sampleOutbox: OutboxItem = {
+      id: "out-sample-1",
+      kind: "delivered",
+      title: "Done",
+      summary: "Summary",
+      status: "delivered",
+      botId: "lead-1",
+      agentId: "worker-1",
+      threadLink: "",
+      inboxId: null,
+      createdAt: "2026-11-25T00:00:00Z",
+      ackedAt: null,
+      ackNote: null,
+    };
     kernel.events.on<{ rawText: string; ackAccepted?: () => void; resolve?: (v: unknown) => void }>(
       "inbox.capture",
       (p) => {
@@ -355,6 +529,15 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
         p.resolve?.(1);
       },
     );
+    kernel.events.on<OutboxListEvent>("outbox.list", (p) => {
+      p.ackAccepted?.();
+      p.resolve?.([sampleOutbox]);
+    });
+    kernel.events.on<OutboxAckByIdEvent>("outbox.ack", (p) => {
+      p.ackAccepted?.();
+      ackedByIds.push({ id: p.id, note: p.note });
+      p.resolve?.({ ...sampleOutbox, status: "acked", ackedAt: "2026-11-25T01:00:00Z", ackNote: p.note ?? null });
+    });
 
     const hookCtx = { paseo: {}, signal: new AbortController().signal } as unknown as PluginHookContext;
     const companionOpen = (await hooks.get("agent.open.before")?.(
@@ -367,7 +550,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       { request: makeOpenRequest({ "paseo-bot.botId": "butler" }, []) },
       hookCtx,
     )) as PluginSessionOpenRequest;
-    expect(butlerOpen.tools).toHaveLength(6);
+    expect(butlerOpen.tools).toHaveLength(8);
 
     const toolMap = new Map(butlerOpen.tools.map((t) => [t.name, t]));
     const butlerAgent: PluginHookAgent = {
@@ -464,6 +647,12 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       background: false,
       metadata: { "paseo-bot.botId": "lead-1", "paseo-bot.kind": "worker-thread" },
     };
+    const butlerWorkerAgent: PluginHookAgent = {
+      ...workerAgent,
+      id: "butler-worker-1",
+      title: "Direct butler check",
+      metadata: { "paseo-bot.botId": "butler", "paseo-bot.kind": "worker-thread" },
+    };
 
     await hooks.get("agent.permission.before")?.(
       {
@@ -480,6 +669,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       },
       hookCtx,
     );
+    // Project-lead owned worker completion/failure routes to owner Bot QA, NOT directly to Outbox
     await hooks.get("agent.turn.after")?.(
       { agent: workerAgent, turnId: "t-1", outcome: { kind: "completed" } },
       hookCtx,
@@ -488,14 +678,105 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       { agent: workerAgent, turnId: "t-2", outcome: { kind: "failed", error: { message: "Build failed" } } },
       hookCtx,
     );
+    expect(ensuredCalls.filter((c) => c.botId === "lead-1")).toHaveLength(2);
+    expect(ensuredCalls[0]?.prompt).toContain('thread_inspect(agentId="worker-1")');
+
+    // Lead inspects and formally escalates verified result via outbox_post(threadAgentId)
+    const leadPostOwn = await toolMap.get("outbox_post")!.execute(
+      { kind: "delivered", title: "QA verified", summary: "Checked all tests", threadAgentId: "worker-1" },
+      { ...toolCtx, agent: lead1Agent },
+    );
+    expect(leadPostOwn.isError).toBeUndefined();
+    const leadPostForeign = await toolMap.get("outbox_post")!.execute(
+      { kind: "delivered", title: "Cross-lead", summary: "Should block", threadAgentId: "other-worker" },
+      { ...toolCtx, agent: lead1Agent },
+    );
+    expect(leadPostForeign.isError).toBe(true);
+
+    // Direct butler-owned worker still reports straight to Outbox
+    await hooks.get("agent.turn.after")?.(
+      { agent: butlerWorkerAgent, turnId: "t-3", outcome: { kind: "failed", error: { message: "Lint failed" } } },
+      hookCtx,
+    );
 
     expect(ackedByAgent).toEqual([{ agentId: "worker-1", kind: "needs_decision", note: "Resolved in Paseo" }]);
     expect(outboxEvents).toEqual([
       { kind: "delivered", agentId: "butler-home" },
       { kind: "needs_decision", agentId: "worker-1" },
       { kind: "delivered", agentId: "worker-1" },
-      { kind: "blocked", agentId: "worker-1" },
+      { kind: "blocked", agentId: "butler-worker-1" },
     ]);
+
+    const outListRes = await toolMap.get("outbox_list")!.execute({ includeAcked: false, limit: 10 }, toolCtx);
+    expect((outListRes.structuredContent as { items: OutboxItem[] }).items).toHaveLength(1);
+    const outAckRes = await toolMap.get("outbox_ack")!.execute({ id: "out-sample-1", note: "User notified" }, toolCtx);
+    expect(outAckRes.isError).toBeUndefined();
+    expect(ackedByIds).toEqual([{ id: "out-sample-1", note: "User notified" }]);
+
+    const leadOutListDenied = await toolMap.get("outbox_list")!.execute(
+      { includeAcked: false, limit: 10 },
+      { ...toolCtx, agent: lead1Agent },
+    );
+    expect(leadOutListDenied.isError).toBe(true);
+
+    // outboxDigestToButlerRpc validation & happy path
+    await expect(handlers.get(outboxDigestToButlerRpc.name)?.({}, { paseo: {} })).rejects.toMatchObject({
+      code: ERROR_CODES.VALIDATION,
+    });
+
+    await store.update((s) => ({
+      nextState: { ...s, outbox: [sampleOutbox] },
+      result: null,
+    }));
+    await expect(
+      handlers.get(outboxDigestToButlerRpc.name)?.({ botId: "companion" }, { paseo: {} }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.PERMISSION_DENIED });
+    await expect(
+      handlers.get(outboxDigestToButlerRpc.name)?.({ botId: "missing-bot" }, { paseo: {} }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.NOT_FOUND });
+
+    const digestResult = (await handlers.get(outboxDigestToButlerRpc.name)?.({}, { paseo: {} })) as {
+      agentId: string;
+      botId: string;
+      itemCount: number;
+      promptPreview: string;
+    };
+    expect(digestResult).toMatchObject({ agentId: "butler-home", botId: "butler", itemCount: 1 });
+    expect(ensuredCalls.filter((c) => c.botId === "butler")).toHaveLength(1);
+    expect(store.read().bots.find((b) => b.id === "butler")?.agentId).toBe("butler-home");
+
+    // Disable Paseo thread backend -> blocks dispatch/inspect RPCs and strips thread tools
+    await store.update((s) => ({
+      nextState: { ...s, settings: { paseoEnabled: false } },
+      result: null,
+    }));
+    const butlerPureOpen = (await hooks.get("agent.open.before")?.(
+      { request: makeOpenRequest({ "paseo-bot.botId": "butler" }, []) },
+      hookCtx,
+    )) as PluginSessionOpenRequest;
+    expect(butlerPureOpen.tools.map((t) => t.name)).not.toContain("bot_dispatch_thread");
+    expect(butlerPureOpen.tools.map((t) => t.name)).not.toContain("thread_inspect");
+
+    await expect(
+      handlers.get(threadDispatchRpc.name)?.(
+        { botId: "lead-1", title: "Blocked", prompt: "go", worktree: false },
+        { paseo: {} },
+      ),
+    ).rejects.toMatchObject({ code: ERROR_CODES.PERMISSION_DENIED });
+    await expect(
+      handlers.get(threadInspectRpc.name)?.({ agentId: "worker-1", limit: 5 }, { paseo: {} }),
+    ).rejects.toMatchObject({ code: ERROR_CODES.PERMISSION_DENIED });
+
+    const disabledToolDispatch = await toolMap.get("bot_dispatch_thread")!.execute(
+      { botId: "lead-1", title: "Blocked", prompt: "go", worktree: false },
+      toolCtx,
+    );
+    expect(disabledToolDispatch.isError).toBe(true);
+    const disabledToolInspect = await toolMap.get("thread_inspect")!.execute(
+      { agentId: "worker-1", limit: 5 },
+      toolCtx,
+    );
+    expect(disabledToolInspect.isError).toBe(true);
 
     kernel.dispose();
   });

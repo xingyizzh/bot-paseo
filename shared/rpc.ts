@@ -7,6 +7,7 @@ import {
   BotRoleTypeSchema,
   BotSectionSchema,
   DispatchedThreadSchema,
+  HubSettingsSchema,
   InboxItemSchema,
   InboxSourceSchema,
   InboxStatusSchema,
@@ -172,6 +173,27 @@ export const threadInspectRpc = defineRpc({
     title: z.string().nullable(),
     cwd: z.string().nullable(),
     digests: z.array(ThreadMessageDigestSchema),
+  }),
+});
+
+export const settingsUpdateRpc = defineRpc({
+  name: "paseo-bot.settings.update",
+  input: z.object({
+    paseoEnabled: z.boolean(),
+  }),
+  output: HubSettingsSchema,
+});
+
+export const outboxDigestToButlerRpc = defineRpc({
+  name: "paseo-bot.outbox.digest-to-butler",
+  input: z.object({
+    botId: z.string().min(1).optional(),
+  }),
+  output: z.object({
+    agentId: z.string().min(1),
+    botId: z.string().min(1),
+    itemCount: z.number().int().nonnegative(),
+    promptPreview: z.string(),
   }),
 });
 

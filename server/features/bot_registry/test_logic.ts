@@ -4,9 +4,22 @@ import path from "node:path";
 import type { PaseoApi } from "@getpaseo/client";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createEmptyHubState, DomainError, ERROR_CODES, type BotHubSnapshot } from "../../../shared/contracts";
-import { botArchiveRpc, botOpenSessionRpc, botSnapshotRpc, botUpsertRpc } from "../../../shared/rpc";
-import { createPaseoAdapter, type PaseoPort } from "../../adapters/paseo-adapter";
+import {
+  createEmptyHubState,
+  DomainError,
+  ERROR_CODES,
+  type BotHubSnapshot,
+  type HubSettings,
+} from "../../../shared/contracts";
+import {
+  botArchiveRpc,
+  botOpenSessionRpc,
+  botSnapshotRpc,
+  botUpsertRpc,
+  settingsUpdateRpc,
+} from "../../../shared/rpc";
+import type { ExecutionPort } from "../../adapters/execution-port";
+import { createPaseoAdapter } from "../../adapters/paseo-adapter";
 import { ServerKernel } from "../../core/kernel";
 import { createLogger } from "../../core/logger";
 import { createJsonStateStore } from "../../core/store";
@@ -16,6 +29,7 @@ import {
   bindBotAgent,
   deleteSection,
   seedDefaultBots,
+  updateHubSettings,
   upsertBot,
   upsertSection,
 } from "./logic";
@@ -117,6 +131,38 @@ describe("bot_registry pure logic", () => {
     state = archiveBot(state, { botId: "butler", archived: false }).nextState;
     expect(state.bots.find((b) => b.id === "butler")?.archivedAt).toBeNull();
   });
+
+  it("updates hub settings idempotently when value is unchanged", () => {
+    const initial = createEmptyHubState("2026-11-25T00:00:00Z");
+    expect(initial.settings).toEqual({ paseoEnabled: true });
+    expect(updateHubSettings(initial, { paseoEnabled: true })).toBe(initial);
+
+    const disabled = updateHubSettings(initial, { paseoEnabled: false });
+    expect(disabled).not.toBe(initial);
+    expect(disabled.settings).toEqual({ paseoEnabled: false });
+    expect(updateHubSettings(disabled, { paseoEnabled: false })).toBe(disabled);
+  });
+
+  it("defaults omitted settings to paseoEnabled=true when loading legacy hub-state.json", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-bot-legacy-settings-"));
+    tempDirs.push(dir);
+    const store = createJsonStateStore(dir);
+    const legacy = {
+      version: 1,
+      revision: 3,
+      bots: [],
+      sections: [],
+      inbox: [],
+      outbox: [],
+      threads: [],
+      updatedAt: "2026-11-25T00:00:00Z",
+    };
+    fs.writeFileSync(store.statePath, JSON.stringify(legacy), "utf8");
+
+    const loaded = store.read();
+    expect(loaded.revision).toBe(3);
+    expect(loaded.settings).toEqual({ paseoEnabled: true });
+  });
 });
 
 describe("bot_registry adapter & paseo-adapter hardening", () => {
@@ -134,7 +180,9 @@ describe("bot_registry adapter & paseo-adapter hardening", () => {
     } as unknown as PluginServerContext;
 
     const reloadedIds: string[] = [];
-    const adapter: PaseoPort = {
+    const adapter: ExecutionPort = {
+      kind: "paseo",
+      capabilities: { threads: true, worktree: true, inspect: true },
       async resolveDefaultWorkspaceDir() {
         return dir;
       },
@@ -196,6 +244,20 @@ describe("bot_registry adapter & paseo-adapter hardening", () => {
     await expect(invoke(botOpenSessionRpc.name, { botId: "butler" })).rejects.toMatchObject({
       code: ERROR_CODES.PERMISSION_DENIED,
     });
+
+    const revBeforeSettings = kernel.store.read().revision;
+    const disabledSettings = (await invoke(settingsUpdateRpc.name, { paseoEnabled: false })) as HubSettings;
+    expect(disabledSettings).toEqual({ paseoEnabled: false });
+    expect(kernel.store.read().settings).toEqual({ paseoEnabled: false });
+    expect(kernel.store.read().revision).toBe(revBeforeSettings + 1);
+
+    const noopSettings = (await invoke(settingsUpdateRpc.name, { paseoEnabled: false })) as HubSettings;
+    expect(noopSettings).toEqual({ paseoEnabled: false });
+    expect(kernel.store.read().revision).toBe(revBeforeSettings + 1);
+
+    const enabledSettings = (await invoke(settingsUpdateRpc.name, { paseoEnabled: true })) as HubSettings;
+    expect(enabledSettings).toEqual({ paseoEnabled: true });
+    expect(kernel.store.read().settings).toEqual({ paseoEnabled: true });
     kernel.dispose();
   });
 

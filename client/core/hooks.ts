@@ -136,5 +136,7 @@ export function useHubActions() {
     ackOutbox: useHubMutation(rpc.outboxAckRpc, syncAfterMutation),
     dispatchThread: useHubMutation(rpc.threadDispatchRpc, syncAfterMutation),
     inspectThread: useRpc(rpc.threadInspectRpc),
+    updateSettings: useHubMutation(rpc.settingsUpdateRpc, syncAfterMutation),
+    digestOutboxToButler: useHubMutation(rpc.outboxDigestToButlerRpc, syncAfterMutation),
   };
 }

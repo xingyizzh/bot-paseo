@@ -3,10 +3,13 @@ import os from "node:os";
 import path from "node:path";
 import {
   ERROR_CODES,
+  filterOutboxItems,
   type InboxCaptureEvent,
   type InboxMarkDispatchedEvent,
   type OutboxAckByAgentEvent,
+  type OutboxAckByIdEvent,
   type OutboxEnqueueEvent,
+  type OutboxListEvent,
 } from "../../../shared/contracts";
 import {
   inboxAddRpc,
@@ -184,11 +187,42 @@ export const inboxOutboxFeature: ServerFeature = {
         });
     });
 
+    const offOutboxList = kernel.events.on<OutboxListEvent>("outbox.list", (payload) => {
+      payload.ackAccepted?.();
+      try {
+        const items = filterOutboxItems(kernel.store.read().outbox, {
+          includeAcked: payload.includeAcked,
+          kind: payload.kind,
+          limit: payload.limit,
+        });
+        payload.resolve?.(items);
+      } catch (err) {
+        kernel.logger.error(id, "outbox.list", ERROR_CODES.ADAPTER_FAILURE, String(err));
+        payload.reject?.(err);
+      }
+    });
+
+    const offOutboxAck = kernel.events.on<OutboxAckByIdEvent>("outbox.ack", (payload) => {
+      payload.ackAccepted?.();
+      void kernel
+        .commitState(id, (state) => {
+          const { nextState, item } = ackOutboxItem(state, { id: payload.id, note: payload.note });
+          return { nextState, result: item };
+        })
+        .then((item) => payload.resolve?.(item))
+        .catch((err) => {
+          kernel.logger.error(id, "outbox.ack", ERROR_CODES.ADAPTER_FAILURE, String(err));
+          payload.reject?.(err);
+        });
+    });
+
     return () => {
       offCapture();
       offDispatched();
       offOutbox();
       offAckByAgent();
+      offOutboxList();
+      offOutboxAck();
     };
   },
 };

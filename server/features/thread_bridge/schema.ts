@@ -47,6 +47,7 @@ export const OutboxPostToolInput = z.object({
   kind: OutboxKindSchema,
   title: z.string().min(1).max(120),
   summary: z.string().min(1).max(2000),
+  threadAgentId: z.string().min(1).optional(),
   inboxId: z.string().nullable().optional(),
   threadLink: z.string().optional(),
 });
@@ -63,4 +64,15 @@ export const DispatchThreadToolInput = z.object({
 export const InspectThreadToolInput = z.object({
   agentId: z.string().min(1),
   limit: z.number().int().min(1).max(20).default(8),
+});
+
+export const OutboxListToolInput = z.object({
+  includeAcked: z.boolean().default(false),
+  kind: OutboxKindSchema.optional(),
+  limit: z.number().int().min(1).max(50).default(20),
+});
+
+export const OutboxAckToolInput = z.object({
+  id: z.string().min(1),
+  note: z.string().max(400).optional(),
 });

@@ -18,12 +18,15 @@ import {
 import type { RecordThreadInput, RolePolicy } from "./schema";
 
 const PASEO_BOT_TOOL_SET = new Set<string>(PASEO_BOT_TOOL_NAMES);
+const THREAD_TOOL_SET = new Set<string>(["bot_dispatch_thread", "thread_inspect"]);
 const COMPANION_TOOLS: readonly string[] = ["inbox_capture"];
 const BUTLER_TOOLS: readonly string[] = [
   "bot_list",
   "inbox_capture",
   "inbox_list",
   "outbox_post",
+  "outbox_list",
+  "outbox_ack",
   "bot_dispatch_thread",
   "thread_inspect",
 ];
@@ -33,7 +36,11 @@ const PROJECT_LEAD_TOOLS: readonly string[] = [
   "outbox_post",
 ];
 
-export function buildRolePolicy(bot: BotRecord): RolePolicy {
+function gateThreadTools(tools: readonly string[], threadsEnabled: boolean): readonly string[] {
+  return threadsEnabled ? tools : tools.filter((name) => !THREAD_TOOL_SET.has(name));
+}
+
+export function buildRolePolicy(bot: BotRecord, threadsEnabled = true): RolePolicy {
   const persona = bot.personaPrompt.trim();
   if (bot.roleType === "companion") {
     return {
@@ -49,18 +56,18 @@ export function buildRolePolicy(bot: BotRecord): RolePolicy {
   if (bot.roleType === "butler") {
     return {
       roleType: "butler",
-      allowedToolNames: BUTLER_TOOLS,
+      allowedToolNames: gateThreadTools(BUTLER_TOOLS, threadsEnabled),
       systemPromptLines: [
-        "ROLE GUARD [BUTLER]: Triage inbox items, coordinate project leads, dispatch isolated worker threads, inspect execution timelines, and publish concise outbox decisions. Do not write application code directly.",
+        "ROLE GUARD [BUTLER]: Triage Inbox items, review Outbox via outbox_list, coordinate project leads, and deliver Muse-style concise human summaries (strictly no raw tool logs, shell commands, diffs, or stack traces). After reporting, call outbox_ack on summarized delivered items, and keep needs_decision/blocked items unacked until resolved. Do not write application code directly.",
         ...(persona ? [persona] : []),
       ],
     };
   }
   return {
     roleType: "project_lead",
-    allowedToolNames: PROJECT_LEAD_TOOLS,
+    allowedToolNames: gateThreadTools(PROJECT_LEAD_TOOLS, threadsEnabled),
     systemPromptLines: [
-      `ROLE GUARD [PROJECT_LEAD]: Stay scoped to project workspace "${bot.defaultCwd}". Dispatch worker threads, inspect their timelines, and report decisions, blockers, or deliveries to Outbox.`,
+      `ROLE GUARD [PROJECT_LEAD]: Own project quality inside "${bot.defaultCwd}". Dispatch worker threads, inspect finished threads with thread_inspect before accepting, re-dispatch fixes when needed, and only call outbox_post (passing threadAgentId) to report quality-verified deliveries, blockers, or decisions to Butler.`,
       ...(persona ? [persona] : []),
     ],
   };
@@ -71,10 +78,18 @@ export function resolveBotByAgent(bots: readonly BotRecord[], agent: PluginHookA
   return typeof botId === "string" ? bots.find((entry) => entry.id === botId) : undefined;
 }
 
-export function checkToolAllowed(bots: readonly BotRecord[], agent: PluginHookAgent, toolName: string): string | null {
+export function checkToolAllowed(
+  bots: readonly BotRecord[],
+  agent: PluginHookAgent,
+  toolName: string,
+  threadsEnabled = true,
+): string | null {
+  if (!threadsEnabled && THREAD_TOOL_SET.has(toolName)) {
+    return "Paseo 线程后端已关闭（纯 Bot 模式）";
+  }
   const bot = resolveBotByAgent(bots, agent);
   if (bot) {
-    return buildRolePolicy(bot).allowedToolNames.includes(toolName)
+    return buildRolePolicy(bot, threadsEnabled).allowedToolNames.includes(toolName)
       ? null
       : `Role "${bot.roleType}" is not allowed to call "${toolName}".`;
   }
@@ -103,6 +118,7 @@ export function buildAgentOpenPatch(
   request: PluginSessionOpenRequest,
   bots: readonly BotRecord[],
   definedTools: readonly AgentToolDefinition[] = [],
+  threadsEnabled = true,
 ): PluginHookResult<"agent.open.before"> {
   if (request.metadata?.["paseo-bot.kind"] === "worker-thread") return undefined;
   const botId = request.metadata?.["paseo-bot.botId"];
@@ -110,7 +126,7 @@ export function buildAgentOpenPatch(
   const bot = bots.find((entry) => entry.id === botId);
   if (!bot) return undefined;
 
-  const policy = buildRolePolicy(bot);
+  const policy = buildRolePolicy(bot, threadsEnabled);
   const allowed = new Set(policy.allowedToolNames);
   const filteredTools = new Map<string, AgentToolDefinition>();
 

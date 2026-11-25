@@ -6,7 +6,13 @@ import {
 import { useToast } from "@getpaseo/plugin/client/ui";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { View } from "react-native";
-import type { BotRecord, BotSection, DispatchedThread, OutboxItem } from "../../../shared/contracts";
+import {
+  resolveExecutionCapabilities,
+  type BotRecord,
+  type BotSection,
+  type DispatchedThread,
+  type OutboxItem,
+} from "../../../shared/contracts";
 import { useHubActions, useHubSnapshot } from "../../core/hooks";
 import type { ClientFeature } from "../../core/kernel";
 import { QuickCreateBotModal } from "./QuickCreateBotModal";
@@ -33,6 +39,7 @@ function BotSidebarView({
   const toast = useToast();
   const { snapshot, isLoading } = useHubSnapshot();
   const { openBotSession, upsertSection } = useHubActions();
+  const capabilities = resolveExecutionCapabilities(snapshot?.settings);
   const agentRefs = useAgents();
   const attentionAgentRefs = useAgents({ where: (a) => a.requiresAttention });
   const runningAgentRefs = useAgents({ where: (a) => a.status === "running" || a.status === "initializing" });
@@ -151,6 +158,7 @@ function BotSidebarView({
         theme={theme}
         isLoading={isLoading}
         hasSnapshot={Boolean(snapshot)}
+        threadsEnabled={capabilities.threads}
         heroBots={heroBots}
         nonHeroBots={nonHeroBots}
         sortedSections={sortedSections}

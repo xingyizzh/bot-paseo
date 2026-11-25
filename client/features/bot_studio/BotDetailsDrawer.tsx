@@ -3,7 +3,7 @@ import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { roleLabel } from "../../../shared/avatars";
-import type { BotRecord } from "../../../shared/contracts";
+import { resolveExecutionCapabilities, type BotRecord } from "../../../shared/contracts";
 import { useHubActions, useHubSnapshot } from "../../core/hooks";
 import { ActionButton, BotAvatar, RolePill, SegmentTabs, SurfaceCard } from "../../core/primitives";
 import {
@@ -21,6 +21,10 @@ const DRAWER_TABS: readonly { value: DrawerTab; label: string }[] = [
   { value: "dispatch", label: "快捷派活" },
 ];
 
+const DETAILS_ONLY_TABS: readonly { value: DrawerTab; label: string }[] = [
+  { value: "details", label: "详情" },
+];
+
 export function BotDetailsDrawer({
   theme,
   navigation,
@@ -31,6 +35,7 @@ export function BotDetailsDrawer({
   const agent = useAgent(params.agentId);
   const { snapshot } = useHubSnapshot();
   const { openBotSession, dispatchThread, inspectThread } = useHubActions();
+  const capabilities = resolveExecutionCapabilities(snapshot?.settings);
   const [tab, setTab] = useState<DrawerTab>("details");
   const [expandedThreadId, setExpandedThreadId] = useState<string | null>(null);
   const [inspectCache, setInspectCache] = useState<Record<string, InspectPreviewState>>({});
@@ -58,6 +63,12 @@ export function BotDetailsDrawer({
     setDispatchTitle("");
     setDispatchPrompt("");
   }, [params.agentId, matchedBot?.id]);
+
+  useEffect(() => {
+    if (!capabilities.threads && tab !== "details") {
+      setTab("details");
+    }
+  }, [capabilities.threads, tab]);
 
   const botThreads = useMemo(() => {
     if (!matchedBot) return [];
@@ -180,13 +191,18 @@ export function BotDetailsDrawer({
         <RolePill label={roleLabel(matchedBot.roleType)} color={matchedBot.avatarColor} theme={theme} />
       </View>
 
-      <SegmentTabs<DrawerTab> options={DRAWER_TABS} value={tab} onChange={setTab} theme={theme} />
+      <SegmentTabs<DrawerTab>
+        options={capabilities.threads ? DRAWER_TABS : DETAILS_ONLY_TABS}
+        value={tab}
+        onChange={setTab}
+        theme={theme}
+      />
 
       {tab === "details" ? (
         <BotDetailsTabContent bot={matchedBot} agentModel={agent?.model ?? null} theme={theme} onEdit={() => onOpenStudio(matchedBot.id)} />
       ) : null}
 
-      {tab === "threads" ? (
+      {capabilities.threads && tab === "threads" ? (
         <BotThreadsTabContent
           threads={botThreads}
           expandedThreadId={expandedThreadId}
@@ -198,7 +214,7 @@ export function BotDetailsDrawer({
         />
       ) : null}
 
-      {tab === "dispatch" ? (
+      {capabilities.threads && tab === "dispatch" ? (
         <BotDispatchTabContent
           bot={matchedBot}
           title={dispatchTitle}

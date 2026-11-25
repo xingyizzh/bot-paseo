@@ -1,8 +1,8 @@
 import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import type { BotRecord, InboxItem } from "../../../shared/contracts";
+import type { BotRecord, ExecutionCapabilities, InboxItem } from "../../../shared/contracts";
 import { CheckboxRow, FormInput, SelectChip } from "../../core/form-primitives";
 import { useHubActions } from "../../core/hooks";
 import { ActionButton, RolePill, SurfaceCard, type AppTheme } from "../../core/primitives";
@@ -32,6 +32,7 @@ interface DispatchSlot {
 function InboxItemCard({
   item,
   isArchive,
+  capabilities,
   navigation,
   theme,
   onUpdateStatus,
@@ -39,6 +40,7 @@ function InboxItemCard({
 }: {
   item: InboxItem;
   isArchive: boolean;
+  capabilities: ExecutionCapabilities;
   navigation: PluginScreenProps["navigation"];
   theme: AppTheme;
   onUpdateStatus(status: InboxItem["status"]): void;
@@ -65,14 +67,16 @@ function InboxItemCard({
 
       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {linkedAgentId && navigation ? (
+          {capabilities.inspect && linkedAgentId && navigation ? (
             <ActionButton label="查看关联线程" variant="secondary" theme={theme} onPress={() => navigation.openAgent({ agentId: linkedAgentId })} />
           ) : null}
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-          {dispatchSlot ? (
+          {!isArchive ? (
             <>
-              <ActionButton label={dispatchSlot.isExpanded ? "收起派发" : "派发任务"} theme={theme} onPress={dispatchSlot.onToggleExpand} />
+              {capabilities.threads && dispatchSlot ? (
+                <ActionButton label={dispatchSlot.isExpanded ? "收起派发" : "派发任务"} theme={theme} onPress={dispatchSlot.onToggleExpand} />
+              ) : null}
               <ActionButton label="完成" variant="secondary" theme={theme} onPress={() => onUpdateStatus("done")} />
               <ActionButton label="忽略" variant="secondary" theme={theme} onPress={() => onUpdateStatus("dropped")} />
             </>
@@ -82,7 +86,7 @@ function InboxItemCard({
         </View>
       </View>
 
-      {dispatchSlot?.isExpanded ? (
+      {capabilities.threads && dispatchSlot?.isExpanded ? (
         <View style={{ gap: 10, padding: 12, borderRadius: 10, backgroundColor: theme.colors.surface2, borderWidth: 1, borderColor: theme.colors.border }}>
           <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.foreground }}>选择目标执行 Bot</Text>
           <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
@@ -104,11 +108,13 @@ function InboxItemCard({
 export function InboxTab({
   items,
   bots,
+  capabilities,
   navigation,
   theme,
 }: {
   items: readonly InboxItem[];
   bots: readonly BotRecord[];
+  capabilities: ExecutionCapabilities;
   navigation: PluginScreenProps["navigation"];
   theme: AppTheme;
 }) {
@@ -120,6 +126,10 @@ export function InboxTab({
   const [taskTitle, setTaskTitle] = useState("");
   const [worktree, setWorktree] = useState(true);
   const [archiveOpen, setArchiveOpen] = useState(false);
+
+  useEffect(() => {
+    if (!capabilities.threads) setExpandingId(null);
+  }, [capabilities.threads]);
 
   const dispatchableBots = useMemo(() => bots.filter((b) => b.archivedAt === null && b.roleType !== "companion"), [bots]);
   const sorted = useMemo(() => [...items].sort((a, b) => b.createdAt.localeCompare(a.createdAt)), [items]);
@@ -205,6 +215,7 @@ export function InboxTab({
             key={item.id}
             item={item}
             isArchive={false}
+            capabilities={capabilities}
             navigation={navigation}
             theme={theme}
             onUpdateStatus={(status) => handleStatusUpdate(item.id, status)}
@@ -239,6 +250,7 @@ export function InboxTab({
                   key={item.id}
                   item={item}
                   isArchive={true}
+                  capabilities={capabilities}
                   navigation={navigation}
                   theme={theme}
                   onUpdateStatus={(status) => handleStatusUpdate(item.id, status)}

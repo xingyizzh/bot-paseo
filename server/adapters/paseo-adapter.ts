@@ -9,31 +9,9 @@ import {
   type ThreadMessageDigest,
 } from "../../shared/contracts";
 import type { Logger } from "../core/logger";
+import type { ExecutionPort } from "./execution-port";
 
-export interface PaseoPort {
-  resolveDefaultWorkspaceDir(paseo: PaseoApi, fallback: string): Promise<string>;
-  ensureBotAgent(
-    paseo: PaseoApi,
-    bot: BotRecord,
-    initialPrompt?: string,
-  ): Promise<{ agentId: string; created: boolean }>;
-  reloadBotAgent(paseo: PaseoApi, agentId: string): Promise<void>;
-  dispatchThread(
-    paseo: PaseoApi,
-    input: { bot: BotRecord; title: string; prompt: string; cwd: string; worktree: boolean },
-  ): Promise<{ agentId: string }>;
-  inspectThread(
-    paseo: PaseoApi,
-    agentId: string,
-    limit: number,
-  ): Promise<{
-    agentId: string;
-    status: string;
-    title: string | null;
-    cwd: string | null;
-    digests: ThreadMessageDigest[];
-  }>;
-}
+export type PaseoPort = ExecutionPort;
 
 const MODE_PATTERNS: Record<BotPermissionMode, RegExp> = {
   readonly: /plan|read.?only|ask/i,
@@ -49,6 +27,14 @@ function hasGitAncestor(startDir: string): boolean {
     if (parent === current) return false;
     current = parent;
   }
+}
+
+function requirePaseo(host: unknown, step: string): PaseoApi {
+  const paseo = host as PaseoApi | null | undefined;
+  if (!paseo || !paseo.agents) {
+    throw new DomainError("paseo_adapter", step, ERROR_CODES.ADAPTER_FAILURE, "Missing PaseoApi host handle");
+  }
+  return paseo;
 }
 
 function summarizeTimelineItem(item: Record<string, unknown>): ThreadMessageDigest | null {
@@ -99,10 +85,14 @@ async function resolveModeId(
   }
 }
 
-export function createPaseoAdapter(logger: Logger): PaseoPort {
+export function createPaseoAdapter(logger: Logger): ExecutionPort {
   return {
-    async resolveDefaultWorkspaceDir(paseo, fallback) {
+    kind: "paseo",
+    capabilities: { threads: true, worktree: true, inspect: true },
+
+    async resolveDefaultWorkspaceDir(host, fallback) {
       try {
+        const paseo = requirePaseo(host, "resolveDefaultWorkspaceDir");
         const res = await paseo.projects.list();
         const first = res.projects[0];
         if (first?.projectRootPath) return first.projectRootPath;
@@ -112,8 +102,9 @@ export function createPaseoAdapter(logger: Logger): PaseoPort {
       return fallback;
     },
 
-    async ensureBotAgent(paseo, bot, initialPrompt) {
+    async ensureBotAgent(host, bot, initialPrompt) {
       try {
+        const paseo = requirePaseo(host, "ensureBotAgent");
         if (bot.agentId) {
           try {
             const ref = paseo.agents.ref(bot.agentId);
@@ -161,16 +152,18 @@ export function createPaseoAdapter(logger: Logger): PaseoPort {
       }
     },
 
-    async reloadBotAgent(paseo, agentId) {
+    async reloadBotAgent(host, agentId) {
       try {
+        const paseo = requirePaseo(host, "reloadBotAgent");
         await paseo.agents.ref(agentId).reload();
       } catch (err) {
         logger.warn("paseo_adapter", "reloadBotAgent", String(err));
       }
     },
 
-    async dispatchThread(paseo, input) {
+    async dispatchThread(host, input) {
       try {
+        const paseo = requirePaseo(host, "dispatchThread");
         const provider = await resolveUsableProvider(paseo, input.bot.provider);
         const modeId = await resolveModeId(paseo, provider, input.bot.permissionMode);
         const isGitRepo = hasGitAncestor(input.cwd);
@@ -204,8 +197,9 @@ export function createPaseoAdapter(logger: Logger): PaseoPort {
       }
     },
 
-    async inspectThread(paseo, agentId, limit) {
+    async inspectThread(host, agentId, limit) {
       try {
+        const paseo = requirePaseo(host, "inspectThread");
         const ref = paseo.agents.ref(agentId);
         const page = await ref.timeline.refetch({ direction: "tail", limit });
         const digests = page.entries

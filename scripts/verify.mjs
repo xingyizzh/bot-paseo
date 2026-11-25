@@ -293,7 +293,7 @@ async function runVerification(fault) {
       title: "Approve release check",
       summary: "Needs human signoff",
     });
-    await client.invokePluginRpc("paseo-bot", "paseo-bot.outbox.add", {
+    const outDelivered = await client.invokePluginRpc("paseo-bot", "paseo-bot.outbox.add", {
       kind: "delivered",
       title: "Smoke delivered",
       summary: "Done",
@@ -303,9 +303,46 @@ async function runVerification(fault) {
       note: "Verified in sandbox",
     });
     assert(outAcked.status === "acked", "Outbox ack did not persist");
+    const deliveredAcked = await client.invokePluginRpc("paseo-bot", "paseo-bot.outbox.ack", {
+      id: outDelivered.id,
+      note: "Verified delivered ack",
+    });
+    assert(deliveredAcked.status === "acked", "Delivered outbox ack did not persist");
+
+    let emptyDigestRejected = false;
+    try {
+      await client.invokePluginRpc("paseo-bot", "paseo-bot.outbox.digest-to-butler", {});
+    } catch (err) {
+      emptyDigestRejected = String(err).includes("ERR_VALIDATION") || String(err).includes("Outbox");
+    }
+    assert(emptyDigestRejected, "outbox.digest-to-butler did not fail with validation error when all outbox items are acked");
+
+    const disabledSettings = await client.invokePluginRpc("paseo-bot", "paseo-bot.settings.update", {
+      paseoEnabled: false,
+    });
+    assert(disabledSettings.paseoEnabled === false, "settings.update did not set paseoEnabled=false");
+
+    let dispatchBlocked = false;
+    try {
+      await client.invokePluginRpc("paseo-bot", "paseo-bot.thread.dispatch", {
+        botId: lead.id,
+        title: "Blocked while disabled",
+        prompt: "Should fail",
+        worktree: false,
+      });
+    } catch {
+      dispatchBlocked = true;
+    }
+    assert(dispatchBlocked, "thread.dispatch was NOT blocked when paseoEnabled=false");
+
+    const reenabledSettings = await client.invokePluginRpc("paseo-bot", "paseo-bot.settings.update", {
+      paseoEnabled: true,
+    });
+    assert(reenabledSettings.paseoEnabled === true, "settings.update did not restore paseoEnabled=true");
 
     const finalSnap = await client.invokePluginRpc("paseo-bot", "paseo-bot.snapshot", {});
     assert(finalSnap.bots.length === 3, `Expected 3 bots, got ${finalSnap.bots.length}`);
+    assert(finalSnap.settings?.paseoEnabled === true, "Final settings.paseoEnabled should be true");
     assert(finalSnap.inbox.some((i) => i.id === inboxCreated.id && i.status === "triaged"), "Inbox persistence check failed");
     assert(finalSnap.outbox.some((o) => o.id === outNeeds.id && o.status === "acked"), "Outbox persistence check failed");
 

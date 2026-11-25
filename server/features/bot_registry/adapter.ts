@@ -7,14 +7,16 @@ import {
   botSectionUpsertRpc,
   botSnapshotRpc,
   botUpsertRpc,
+  settingsUpdateRpc,
 } from "../../../shared/rpc";
-import type { PaseoPort } from "../../adapters/paseo-adapter";
+import type { ExecutionPort } from "../../adapters/execution-port";
 import type { FeatureManifest, ServerFeature } from "../../core/kernel";
 import {
   archiveBot,
   bindBotAgent,
   deleteSection,
   seedDefaultBots,
+  updateHubSettings,
   upsertBot,
   upsertSection,
 } from "./logic";
@@ -27,7 +29,7 @@ export const BOT_REGISTRY_MANIFEST: FeatureManifest = {
 export const botRegistryFeature: ServerFeature = {
   manifest: BOT_REGISTRY_MANIFEST,
   register(kernel) {
-    const adapter = kernel.adapter as PaseoPort;
+    const adapter = kernel.adapter as ExecutionPort;
     const id = BOT_REGISTRY_MANIFEST.id;
 
     kernel.handleRpc(id, botSnapshotRpc, async (_input, ctx) => {
@@ -104,6 +106,14 @@ export const botRegistryFeature: ServerFeature = {
         return { nextState, result: updated };
       });
       return { bot, agentId: ensured.agentId, created: ensured.created };
+    });
+
+    kernel.handleRpc(id, settingsUpdateRpc, async (input) => {
+      await kernel.commitState(id, (state) => ({
+        nextState: updateHubSettings(state, input),
+        result: null,
+      }));
+      return kernel.store.read().settings;
     });
   },
 };
