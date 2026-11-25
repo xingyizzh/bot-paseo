@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { FormInput } from "../../core/form-primitives";
 import { useHubActions } from "../../core/hooks";
-import { ActionButton, type AppTheme } from "../../core/primitives";
+import { ActionButton, semanticColor, type AppTheme } from "../../core/primitives";
 
 export function SidebarTopBar({
   theme,
@@ -54,12 +54,12 @@ export function SidebarTopBar({
                 height: 14,
                 borderRadius: 7,
                 paddingHorizontal: 3,
-                backgroundColor: hasUrgentOutbox ? theme.colors.statusWarning : theme.colors.statusDanger,
+                backgroundColor: hasUrgentOutbox ? "#D97706" : "#DC2626",
                 alignItems: "center",
                 justifyContent: "center",
               }}
             >
-              <Text style={{ fontSize: 9, fontWeight: "700", color: theme.colors.accentForeground }}>
+              <Text style={{ fontSize: 9, fontWeight: "700", color: "#FFFFFF" }}>
                 {badgeCount > 9 ? "9+" : String(badgeCount)}
               </Text>
             </View>
@@ -108,7 +108,7 @@ export function SidebarBottomBar({
         <Text style={{ fontSize: 12, color: theme.colors.foregroundMuted }}>/</Text>
         <Text
           numberOfLines={1}
-          style={{ fontSize: 12, fontWeight: "600", color: hasUrgentOutbox ? theme.colors.statusWarning : theme.colors.foreground }}
+          style={{ fontSize: 12, fontWeight: "600", color: hasUrgentOutbox ? semanticColor(theme, "warning") : theme.colors.foreground }}
         >
           Outbox · {unackedOutboxCount}
         </Text>

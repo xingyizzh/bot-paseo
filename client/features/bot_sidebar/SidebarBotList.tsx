@@ -2,13 +2,13 @@ import { Icon, ScrollView } from "@getpaseo/plugin/client/ui";
 import { Pressable, Text, View } from "react-native";
 import { roleLabel } from "../../../shared/avatars";
 import type { BotRecord, BotSection, DispatchedThread, OutboxItem } from "../../../shared/contracts";
-import { BotAvatar, RolePill, type AppTheme } from "../../core/primitives";
+import { BotAvatar, RolePill, isDarkTheme, semanticColor, type AppTheme } from "../../core/primitives";
 
 type DotStatus = "attention" | "running" | "unread";
 
 function resolveDotColor(status: DotStatus | null, theme: AppTheme): string | null {
-  if (status === "attention") return theme.colors.statusWarning;
-  if (status === "running") return theme.colors.statusSuccess;
+  if (status === "attention") return semanticColor(theme, "warning");
+  if (status === "running") return semanticColor(theme, "success");
   if (status === "unread") return theme.colors.accent;
   return null;
 }
@@ -58,6 +58,7 @@ function HeroBotCard({
   dotColor: string | null;
   onPress(): void;
 }) {
+  const cardBg = isDarkTheme(theme) ? theme.colors.surface1 : theme.colors.surface0;
   return (
     <Pressable
       accessibilityRole="button"
@@ -67,7 +68,7 @@ function HeroBotCard({
         flexGrow: 1,
         minWidth: 100,
         borderRadius: 16,
-        backgroundColor: theme.colors.surface1,
+        backgroundColor: cardBg,
         borderWidth: 1,
         borderColor: active ? theme.colors.accent : theme.colors.border,
         paddingVertical: 14,
@@ -80,7 +81,7 @@ function HeroBotCard({
       {dotColor ? (
         <View style={{ position: "absolute", top: 10, right: 10, width: 8, height: 8, borderRadius: 4, backgroundColor: dotColor }} />
       ) : null}
-      <BotAvatar iconName={bot.iconName} color={bot.avatarColor} size={48} showStar borderColor={theme.colors.surface1} theme={theme} />
+      <BotAvatar iconName={bot.iconName} color={bot.avatarColor} size={48} showStar borderColor={cardBg} theme={theme} />
       <Text numberOfLines={1} style={{ fontSize: 13.5, fontWeight: "600", color: theme.colors.foreground, textAlign: "center" }}>
         {bot.name}
       </Text>

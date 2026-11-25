@@ -19,6 +19,13 @@ export function isDarkTheme(theme: AppTheme): boolean {
   return lum !== null && lum < 0.5;
 }
 
+export function semanticColor(theme: AppTheme, tone: "warning" | "danger" | "success"): string {
+  const dark = isDarkTheme(theme);
+  if (tone === "warning") return dark ? "#F59E0B" : "#D97706";
+  if (tone === "danger") return dark ? "#F87171" : "#DC2626";
+  return dark ? "#34D399" : "#16A34A";
+}
+
 export interface BotAvatarProps {
   iconName: string;
   color: string;
@@ -41,8 +48,8 @@ export function BotAvatar({
   const iconSize = Math.round(size * 0.48);
   const badgeSize = Math.max(12, Math.round(size * 0.34));
   const resolvedBorder = borderColor ?? theme?.colors.surface0 ?? "#FFFFFF";
-  const starBg = theme?.colors.statusWarning ?? "#D97706";
-  const starFg = theme?.colors.accentForeground ?? "#FFFFFF";
+  const starBg = theme ? semanticColor(theme, "warning") : "#D97706";
+  const starFg = "#FFFFFF";
   return (
     <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: `${color}1A`, borderWidth: 1, borderColor: `${color}40`, alignItems: "center", justifyContent: "center" }}>
       <Icon name={iconName} size={iconSize} color={color} />
@@ -182,8 +189,8 @@ export function ActionButton({
   variant?: "primary" | "secondary" | "danger";
   disabled?: boolean;
 }) {
-  const bg = variant === "primary" ? theme.colors.accent : variant === "danger" ? theme.colors.statusDanger : theme.colors.surface2;
-  const fg = variant === "secondary" ? theme.colors.foreground : theme.colors.accentForeground;
+  const bg = variant === "primary" ? theme.colors.accent : variant === "danger" ? semanticColor(theme, "danger") : theme.colors.surface2;
+  const fg = variant === "secondary" ? theme.colors.foreground : "#FFFFFF";
   return (
     <Pressable
       accessibilityRole="button"

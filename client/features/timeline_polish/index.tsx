@@ -5,6 +5,7 @@ import { z } from "zod";
 import { PASEO_BOT_TOOL_NAMES, type PaseoBotToolName } from "../../../shared/contracts";
 import { botSnapshotRpc, inboxAddRpc, threadDispatchRpc } from "../../../shared/rpc";
 import type { ClientFeature } from "../../core/kernel";
+import { semanticColor } from "../../core/primitives";
 
 const PASEO_BOT_TOOL_SET: ReadonlySet<string> = new Set(PASEO_BOT_TOOL_NAMES);
 
@@ -70,11 +71,12 @@ function describeToolCall(
 
 function BotEventPill({ theme, item }: PluginTimelineItemProps<BotTimelinePillData>) {
   const { status, label, icon } = item.data;
+  const danger = semanticColor(theme, "danger");
   const accentColor =
     status === "failed"
-      ? theme.colors.statusDanger
+      ? danger
       : status === "running"
-        ? theme.colors.statusSuccess
+        ? semanticColor(theme, "success")
         : theme.colors.foregroundMuted;
 
   return (
@@ -89,7 +91,7 @@ function BotEventPill({ theme, item }: PluginTimelineItemProps<BotTimelinePillDa
           borderRadius: 999,
           backgroundColor: theme.colors.surface1,
           borderWidth: 1,
-          borderColor: status === "failed" ? `${theme.colors.statusDanger}55` : theme.colors.border,
+          borderColor: status === "failed" ? `${danger}55` : theme.colors.border,
           maxWidth: "90%",
         }}
       >
@@ -171,7 +173,7 @@ export const timelinePolishFeature: ClientFeature = {
         },
       }),
       client.addCommandCenterItem({
-        id: "paseo-bot.open-bot-details",
+        id: "open-bot-details",
         title: "打开 Bot 详情抽屉",
         icon: "UserRound",
         context: "agent",
@@ -179,7 +181,7 @@ export const timelinePolishFeature: ClientFeature = {
         onSelect(ctx) { ctx.openPanel("bot-details"); },
       }),
       client.addCommandCenterItem({
-        id: "paseo-bot.open-inbox-outbox",
+        id: "open-inbox-outbox",
         title: "打开收发箱 Inbox/Outbox",
         icon: "Inbox",
         context: "agent",

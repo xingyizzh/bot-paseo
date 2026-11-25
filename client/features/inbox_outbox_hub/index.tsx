@@ -39,12 +39,12 @@ function InboxOutboxNavItem({
               height: 18,
               borderRadius: 9,
               paddingHorizontal: 6,
-              backgroundColor: unackedOutbox > 0 ? theme.colors.statusWarning : theme.colors.accent,
+              backgroundColor: unackedOutbox > 0 ? "#D97706" : theme.colors.accent,
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <Text style={{ fontSize: 11, fontWeight: "700", color: theme.colors.accentForeground }}>
+            <Text style={{ fontSize: 11, fontWeight: "700", color: "#FFFFFF" }}>
               {totalBadge}
             </Text>
           </View>

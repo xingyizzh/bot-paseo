@@ -9,12 +9,12 @@ import {
   type OutboxKind,
 } from "../../../shared/contracts";
 import { useHubActions } from "../../core/hooks";
-import { ActionButton, RolePill, SurfaceCard, type AppTheme } from "../../core/primitives";
+import { ActionButton, RolePill, SurfaceCard, semanticColor, type AppTheme } from "../../core/primitives";
 
 function kindPresentation(kind: OutboxKind, theme: AppTheme): { label: string; color: string } {
-  if (kind === "needs_decision") return { label: "待拍板", color: theme.colors.statusWarning };
-  if (kind === "blocked") return { label: "阻塞中", color: theme.colors.statusDanger };
-  return { label: "已交付", color: theme.colors.statusSuccess };
+  if (kind === "needs_decision") return { label: "待拍板", color: semanticColor(theme, "warning") };
+  if (kind === "blocked") return { label: "阻塞中", color: semanticColor(theme, "danger") };
+  return { label: "已交付", color: semanticColor(theme, "success") };
 }
 
 export function OutboxTab({
@@ -96,7 +96,7 @@ export function OutboxTab({
     <View style={{ gap: 12 }}>
       {activeItems.length === 0 ? (
         <SurfaceCard theme={theme} style={{ alignItems: "center", paddingVertical: 28, gap: 6 }}>
-          <Icon name="CheckCircle2" size={24} color={theme.colors.statusSuccess} />
+          <Icon name="CheckCircle2" size={24} color={semanticColor(theme, "success")} />
           <Text style={{ fontSize: 14, fontWeight: "600", color: theme.colors.foreground }}>
             Outbox 已清零
           </Text>

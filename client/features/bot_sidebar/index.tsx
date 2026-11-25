@@ -138,7 +138,7 @@ function BotSidebarView({
   };
 
   return (
-    <View style={{ flex: 1, backgroundColor: theme.colors.surface0 }}>
+    <View style={{ flex: 1, backgroundColor: "transparent" }}>
       <SidebarTopBar
         theme={theme}
         badgeCount={unackedOutbox.length + openInboxCount}
