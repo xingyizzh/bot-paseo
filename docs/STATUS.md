@@ -15,7 +15,7 @@
 
 | 编号 | 功能名 | 核心价值与客观验收标准 | 状态 |
 |---|---|---|---|
-| `FEAT-001` | Bot 注册与分组管理 | 默认初始化管家与陪伴位双主位；支持 Bot 增改归档、单层分组折叠、权限防越权与避重色分配 | 待做 |
+| `FEAT-001` | Bot 注册与分组管理 | 默认初始化管家与陪伴位双主位；支持 Bot 增改归档、单层分组折叠、权限防越权与避重色分配 | 已完成 |
 | `FEAT-002` | 原话锁存 Inbox & 注意力 Outbox | Inbox `rawText` 不可修改；Outbox 按 `needs_decision > blocked > delivered` 排序；支持导入 `personal-hq` | 待做 |
 | `FEAT-003` | 双脑隔离注魂与 Thread 透视派活 | `companion` 仅获 `inbox_capture` 禁派活/工程；`butler`/`project_lead` 可派发并直读原 Thread；审批/完成自动入 Outbox | 待做 |
 | `FEAT-004` | 实时订阅同步 | 服务端状态变更经 `hub.subscribe` 零泄漏推送至桌面/Web/手机端 | 待做 |
@@ -26,8 +26,8 @@
 | 阶段模块 | 产物路径 | 状态 |
 |---|---|---|
 | 架构与视觉规范 | [ARCHITECTURE.md](../ARCHITECTURE.md)、[design-spec.md](./design-spec.md)、[FEAT-001.md](./statecharts/FEAT-001.md) | 已完成 |
-| 静态门禁与违规夹具 | `scripts/check.mjs`、`tests/gates/` | 待做 |
-| 微内核与 FEAT-001 样板 | `server/core/`、`server/features/bot_registry/`、`tests/integration/` | 待做 |
+| 静态门禁与违规夹具 | `scripts/check.mjs`、`tests/gates/` | 已完成 |
+| 微内核与 FEAT-001 样板 | `server/core/`、`server/features/bot_registry/`、`tests/integration/` | 已完成 |
 | 隔离沙盒验证与脚本 | `scripts/verify.mjs`、`docs/feature-map.md` | 待做 |
 | 协作总入口 | `AGENTS.md` | 待做 |
 
