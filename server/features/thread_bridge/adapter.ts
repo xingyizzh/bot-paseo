@@ -12,16 +12,21 @@ import {
   ERROR_CODES,
   type BotRecord,
   type DispatchedThread,
+  type InboxCaptureEvent,
   type InboxItem,
+  type InboxMarkDispatchedEvent,
+  type OutboxAckByAgentEvent,
+  type OutboxEnqueueEvent,
   type OutboxItem,
 } from "../../../shared/contracts";
 import { threadDispatchRpc, threadInspectRpc } from "../../../shared/rpc";
 import type { PaseoPort } from "../../adapters/paseo-adapter";
-import type { ServerFeature, ServerKernel } from "../../core/kernel";
+import type { FeatureManifest, ServerFeature, ServerKernel } from "../../core/kernel";
 import {
   buildAgentOpenPatch,
   buildPermissionOutboxPayload,
   buildTurnOutboxPayload,
+  canInspectThread,
   checkToolAllowed,
   filterInboxForTool,
   recordDispatchedThread,
@@ -29,7 +34,6 @@ import {
   summarizeBotsForTool,
   updateDispatchedThreadStatus,
 } from "./logic";
-import { THREAD_BRIDGE_MANIFEST } from "./manifest";
 import {
   BotListToolInput,
   DispatchThreadToolInput,
@@ -37,35 +41,12 @@ import {
   InboxListToolInput,
   InspectThreadToolInput,
   OutboxPostToolInput,
-  type InboxCaptureEvent,
-  type InboxMarkDispatchedEvent,
-  type OutboxEnqueueEvent,
 } from "./schema";
 
-interface AckEventBase<T> {
-  ackAccepted?: () => void;
-  resolve?: (value: T) => void;
-  reject?: (err: unknown) => void;
-}
-
-function emitWithAck<T, P extends AckEventBase<T>>(
-  kernel: ServerKernel,
-  topic: string,
-  payload: Omit<P, "ackAccepted" | "resolve" | "reject">,
-): Promise<T | null> {
-  let accepted = false;
-  return new Promise<T | null>((resolve, reject) => {
-    kernel.events.emit(topic, {
-      ...payload,
-      ackAccepted: () => {
-        accepted = true;
-      },
-      resolve,
-      reject,
-    } as P);
-    if (!accepted) resolve(null);
-  });
-}
+export const THREAD_BRIDGE_MANIFEST: FeatureManifest = {
+  id: "thread_bridge",
+  name: "Thread Bridge & Role Guard",
+};
 
 function guardedTool<Input extends z.ZodType>(
   kernel: ServerKernel,
@@ -113,7 +94,7 @@ async function executeDispatch(
 
   const cwd = params.cwd?.trim() || targetBot.defaultCwd;
   const created = await adapter.dispatchThread(paseo, { bot: targetBot, title: params.title, prompt: params.prompt, cwd, worktree: params.worktree });
-  const thread = await kernel.store.update((state) => {
+  const thread = await kernel.commitState(id, (state) => {
     const { nextState, thread: saved } = recordDispatchedThread(state, {
       agentId: created.agentId,
       botId: targetBot.id,
@@ -127,14 +108,13 @@ async function executeDispatch(
   });
 
   if (params.inboxId) {
-    await emitWithAck<void, InboxMarkDispatchedEvent>(kernel, "inbox.markDispatched", {
+    await kernel.events.emitWithAck<void, InboxMarkDispatchedEvent>("inbox.markDispatched", {
       inboxId: params.inboxId,
       botId: targetBot.id,
       agentId: created.agentId,
       title: params.title,
     });
   }
-  kernel.events.emit("state.changed", kernel.store.read());
   return { thread, agentId: created.agentId };
 }
 
@@ -156,7 +136,7 @@ function buildBridgeTools(kernel: ServerKernel, adapter: PaseoPort): AgentToolDe
       async run(input, ctx) {
         const role = ctx.agent.metadata?.["paseo-bot.roleType"];
         const source = role === "companion" ? "companion" : role === "butler" ? "butler" : "user";
-        const item = await emitWithAck<InboxItem, InboxCaptureEvent>(kernel, "inbox.capture", {
+        const item = await kernel.events.emitWithAck<InboxItem, InboxCaptureEvent>("inbox.capture", {
           rawText: input.rawText,
           source,
           targetBotId: input.targetBotId ?? null,
@@ -182,7 +162,7 @@ function buildBridgeTools(kernel: ServerKernel, adapter: PaseoPort): AgentToolDe
       input: OutboxPostToolInput,
       async run(input, ctx) {
         const botId = typeof ctx.agent.metadata?.["paseo-bot.botId"] === "string" ? ctx.agent.metadata["paseo-bot.botId"] : null;
-        const item = await emitWithAck<OutboxItem, OutboxEnqueueEvent>(kernel, "outbox.enqueue", {
+        const item = await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", {
           kind: input.kind,
           title: input.title,
           summary: input.summary,
@@ -222,6 +202,10 @@ function buildBridgeTools(kernel: ServerKernel, adapter: PaseoPort): AgentToolDe
       description: "Read a worker thread's live status and recent timeline messages directly.",
       input: InspectThreadToolInput,
       async run(input, ctx) {
+        const state = kernel.store.read();
+        const callerBot = resolveBotByAgent(state.bots, ctx.agent);
+        const scopeErr = canInspectThread(state, callerBot, input.agentId);
+        if (scopeErr) return { text: scopeErr, isError: true };
         const result = await adapter.inspectThread(ctx.paseo, input.agentId, input.limit);
         return { text: JSON.stringify(result, null, 2), structuredContent: result };
       },
@@ -267,7 +251,14 @@ export const threadBridgeFeature: ServerFeature = {
     const offPerm = kernel.addHook("agent.permission.before", async (payload) => {
       const matched = kernel.store.read().threads.find((entry) => entry.agentId === payload.agent.id);
       const outbox = buildPermissionOutboxPayload(payload.agent, payload.request, matched?.inboxId ?? null);
-      if (outbox) await emitWithAck<OutboxItem, OutboxEnqueueEvent>(kernel, "outbox.enqueue", outbox);
+      if (outbox) await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", outbox);
+    });
+    const offPermAfter = kernel.addHook("agent.permission.after", async (payload) => {
+      await kernel.events.emitWithAck<number, OutboxAckByAgentEvent>("outbox.ackByAgent", {
+        agentId: payload.agent.id,
+        kind: "needs_decision",
+        note: "Resolved in Paseo",
+      });
     });
     const offTurn = kernel.addHook("agent.turn.after", async (payload, ctx) => {
       if (payload.agent.metadata?.["paseo-bot.kind"] !== "worker-thread") return;
@@ -275,18 +266,18 @@ export const threadBridgeFeature: ServerFeature = {
       const matched = kernel.store.read().threads.find((entry) => entry.agentId === payload.agent.id);
       const threadTitle = payload.agent.title?.trim() || matched?.title || payload.agent.id;
       const status = payload.outcome.kind;
-      await kernel.store.update((state) => ({ nextState: updateDispatchedThreadStatus(state, payload.agent.id, status), result: null }));
-      if (matched) kernel.events.emit("state.changed", kernel.store.read());
+      await kernel.commitState(id, (state) => ({ nextState: updateDispatchedThreadStatus(state, payload.agent.id, status), result: null }));
       const summary = payload.outcome.kind === "completed"
         ? await readTurnCompletionSummary(ctx, payload.agent.id, payload.turnId, `Worker thread "${threadTitle}" completed its turn.`)
         : "";
       const outbox = buildTurnOutboxPayload(payload.agent, payload.outcome, threadTitle, matched?.inboxId ?? null, summary);
-      if (outbox) await emitWithAck<OutboxItem, OutboxEnqueueEvent>(kernel, "outbox.enqueue", outbox);
+      if (outbox) await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", outbox);
     });
 
     return () => {
       offOpen();
       offPerm();
+      offPermAfter();
       offTurn();
     };
   },

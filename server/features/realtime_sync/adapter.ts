@@ -1,7 +1,11 @@
 import type { BotHubSnapshot } from "../../../shared/contracts";
 import { hubSubscribe } from "../../../shared/rpc";
-import type { ServerFeature } from "../../core/kernel";
-import { REALTIME_SYNC_MANIFEST } from "./manifest";
+import type { FeatureManifest, ServerFeature } from "../../core/kernel";
+
+export const REALTIME_SYNC_MANIFEST: FeatureManifest = {
+  id: "realtime_sync",
+  name: "Realtime Hub Snapshot Sync",
+};
 
 export const realtimeSyncFeature: ServerFeature = {
   manifest: REALTIME_SYNC_MANIFEST,

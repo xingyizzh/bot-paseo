@@ -6,9 +6,7 @@ import {
   InboxStatusSchema,
   OutboxKindSchema,
   OutboxStatusSchema,
-  type InboxItem,
   type InboxSource,
-  type OutboxItem,
   type OutboxKind,
   type OutboxStatus,
 } from "../../../shared/contracts";
@@ -77,39 +75,3 @@ export const HqOutboxRecordSchema = z.object({
   ackedAt: z.string().nullable().optional(),
   ackNote: z.string().nullable().optional(),
 });
-
-export interface InboxCaptureEvent {
-  rawText: string;
-  source?: InboxSource;
-  targetBotId?: string | null;
-  targetProject?: string | null;
-  tags?: string[];
-  note?: string;
-  ackAccepted?: () => void;
-  resolve?: (item: InboxItem) => void;
-  reject?: (err: unknown) => void;
-}
-
-export interface InboxMarkDispatchedEvent {
-  inboxId: string;
-  botId: string;
-  agentId: string;
-  title: string;
-  ackAccepted?: () => void;
-  resolve?: () => void;
-  reject?: (err: unknown) => void;
-}
-
-export interface OutboxEnqueueEvent {
-  kind: OutboxKind;
-  title: string;
-  summary: string;
-  status?: OutboxStatus;
-  botId?: string | null;
-  agentId?: string | null;
-  threadLink?: string;
-  inboxId?: string | null;
-  ackAccepted?: () => void;
-  resolve?: (item: OutboxItem) => void;
-  reject?: (err: unknown) => void;
-}

@@ -1,6 +1,6 @@
 import { useAgent, type PluginAgentPanelProps } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/ui";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { roleLabel } from "../../../shared/avatars";
 import type { BotRecord } from "../../../shared/contracts";
@@ -52,6 +52,13 @@ export function BotDetailsDrawer({
     return bots.find((b) => b.agentId === params.agentId) ?? null;
   }, [metaBotId, params.agentId, snapshot?.bots]);
 
+  useEffect(() => {
+    setTab("details");
+    setExpandedThreadId(null);
+    setDispatchTitle("");
+    setDispatchPrompt("");
+  }, [params.agentId, matchedBot?.id]);
+
   const botThreads = useMemo(() => {
     if (!matchedBot) return [];
     return [...(snapshot?.threads ?? [])]
@@ -70,10 +77,7 @@ export function BotDetailsDrawer({
       return;
     }
     setExpandedThreadId(agentId);
-    setInspectCache((prev) => ({
-      ...prev,
-      [agentId]: { loading: true, error: null, status: "", digests: [] },
-    }));
+    setInspectCache((prev) => ({ ...prev, [agentId]: { loading: true, error: null, status: "", digests: [] } }));
     try {
       const res = await inspectThread({ agentId, limit: 6 });
       setInspectCache((prev) => ({
@@ -83,12 +87,7 @@ export function BotDetailsDrawer({
     } catch (err) {
       setInspectCache((prev) => ({
         ...prev,
-        [agentId]: {
-          loading: false,
-          error: err instanceof Error ? err.message : "穿透读取失败",
-          status: "",
-          digests: [],
-        },
+        [agentId]: { loading: false, error: err instanceof Error ? err.message : "穿透读取失败", status: "", digests: [] },
       }));
     }
   };
@@ -102,12 +101,7 @@ export function BotDetailsDrawer({
       return;
     }
     try {
-      const res = await dispatchThread.mutateAsync({
-        botId: matchedBot.id,
-        title,
-        prompt,
-        worktree: useWorktree,
-      });
+      const res = await dispatchThread.mutateAsync({ botId: matchedBot.id, title, prompt, worktree: useWorktree });
       setDispatchTitle("");
       setDispatchPrompt("");
       setTab("threads");
@@ -119,16 +113,11 @@ export function BotDetailsDrawer({
 
   if (!matchedBot) {
     return (
-      <ScrollView
-        style={{ flex: 1, backgroundColor: theme.colors.surface0 }}
-        contentContainerStyle={{ padding: 16, gap: 14 }}
-      >
+      <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: 16, gap: 14 }}>
         <SurfaceCard theme={theme} style={{ gap: 10 }}>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
             <Icon name="UserRound" size={18} color={theme.colors.foregroundMuted} />
-            <Text style={{ fontSize: 14, fontWeight: "700", color: theme.colors.foreground }}>
-              当前会话未绑定 Paseo Bot
-            </Text>
+            <Text style={{ fontSize: 14, fontWeight: "700", color: theme.colors.foreground }}>当前会话未绑定 Paseo Bot</Text>
           </View>
           <Text style={{ fontSize: 12.5, color: theme.colors.foregroundMuted, lineHeight: 18 }}>
             这是一个常规 Paseo 会话。你可以直接切换打开团队中的 Bot，或在 Bot 团队管理中新建角色。
@@ -138,9 +127,7 @@ export function BotDetailsDrawer({
 
         {activeBots.length > 0 ? (
           <View style={{ gap: 8 }}>
-            <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.foregroundMuted }}>
-              快速打开团队 Bot
-            </Text>
+            <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.foregroundMuted }}>快速打开团队 Bot</Text>
             {activeBots.map((bot) => (
               <Pressable
                 key={bot.id}
@@ -164,20 +151,12 @@ export function BotDetailsDrawer({
                   borderColor: theme.colors.border,
                 }}
               >
-                <BotAvatar iconName={bot.iconName} color={bot.avatarColor} size={34} />
-                <View style={{ flex: 1, gap: 2 }}>
-                  <Text style={{ fontSize: 13.5, fontWeight: "600", color: theme.colors.foreground }}>
-                    {bot.name}
-                  </Text>
-                  <Text numberOfLines={1} style={{ fontSize: 12, color: theme.colors.foregroundMuted }}>
-                    {bot.bio || roleLabel(bot.roleType)}
-                  </Text>
+                <BotAvatar iconName={bot.iconName} color={bot.avatarColor} size={34} borderColor={theme.colors.surface1} theme={theme} />
+                <View style={{ flex: 1, minWidth: 0, gap: 2 }}>
+                  <Text numberOfLines={1} style={{ fontSize: 13.5, fontWeight: "600", color: theme.colors.foreground }}>{bot.name}</Text>
+                  <Text numberOfLines={1} style={{ fontSize: 12, color: theme.colors.foregroundMuted }}>{bot.bio || roleLabel(bot.roleType)}</Text>
                 </View>
-                <RolePill
-                  label={roleLabel(bot.roleType)}
-                  color={bot.avatarColor}
-                  backgroundColor={`${bot.avatarColor}1A`}
-                />
+                <RolePill label={roleLabel(bot.roleType)} color={bot.avatarColor} theme={theme} />
               </Pressable>
             ))}
           </View>
@@ -187,10 +166,7 @@ export function BotDetailsDrawer({
   }
 
   return (
-    <ScrollView
-      style={{ flex: 1, backgroundColor: theme.colors.surface0 }}
-      contentContainerStyle={{ padding: 16, gap: 16 }}
-    >
+    <ScrollView style={{ flex: 1, backgroundColor: theme.colors.surface0 }} contentContainerStyle={{ padding: 16, gap: 16 }}>
       <View style={{ alignItems: "center", gap: 8, paddingTop: 4 }}>
         <BotAvatar
           iconName={matchedBot.iconName}
@@ -198,26 +174,16 @@ export function BotDetailsDrawer({
           size={56}
           showStar={matchedBot.roleType !== "project_lead" || matchedBot.pinned}
           borderColor={theme.colors.surface0}
+          theme={theme}
         />
-        <Text style={{ fontSize: 16, fontWeight: "700", color: theme.colors.foreground }}>
-          {matchedBot.name}
-        </Text>
-        <RolePill
-          label={roleLabel(matchedBot.roleType)}
-          color={matchedBot.avatarColor}
-          backgroundColor={`${matchedBot.avatarColor}1A`}
-        />
+        <Text style={{ fontSize: 16, fontWeight: "700", color: theme.colors.foreground }}>{matchedBot.name}</Text>
+        <RolePill label={roleLabel(matchedBot.roleType)} color={matchedBot.avatarColor} theme={theme} />
       </View>
 
       <SegmentTabs<DrawerTab> options={DRAWER_TABS} value={tab} onChange={setTab} theme={theme} />
 
       {tab === "details" ? (
-        <BotDetailsTabContent
-          bot={matchedBot}
-          agentModel={agent?.model ?? null}
-          theme={theme}
-          onEdit={() => onOpenStudio(matchedBot.id)}
-        />
+        <BotDetailsTabContent bot={matchedBot} agentModel={agent?.model ?? null} theme={theme} onEdit={() => onOpenStudio(matchedBot.id)} />
       ) : null}
 
       {tab === "threads" ? (

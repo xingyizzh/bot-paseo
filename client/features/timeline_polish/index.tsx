@@ -1,14 +1,12 @@
-import type {
-  PluginClientContext,
-  PluginTimelineItemProps,
-} from "@getpaseo/plugin/client";
+import type { PluginClientContext, PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/ui";
 import { Text, View } from "react-native";
 import { z } from "zod";
+import { PASEO_BOT_TOOL_NAMES, type PaseoBotToolName } from "../../../shared/contracts";
 import { botSnapshotRpc, inboxAddRpc, threadDispatchRpc } from "../../../shared/rpc";
 import type { ClientFeature } from "../../core/kernel";
 
-const BOT_TOOL_PREFIXES = ["inbox_", "outbox_", "bot_", "thread_"] as const;
+const PASEO_BOT_TOOL_SET: ReadonlySet<string> = new Set(PASEO_BOT_TOOL_NAMES);
 
 const BotTimelinePillSchema = z.object({
   tool: z.string(),
@@ -19,67 +17,58 @@ const BotTimelinePillSchema = z.object({
 
 type BotTimelinePillData = z.infer<typeof BotTimelinePillSchema>;
 
-function extractToolLeaf(rawName: string): string {
-  const lower = rawName.trim().toLowerCase();
-  if (lower.includes("__")) {
-    const parts = lower.split("__").filter((p) => p.length > 0);
-    if (parts.length > 0) return parts[parts.length - 1];
-  }
-  if (lower.includes(".")) {
-    const parts = lower.split(".");
-    return parts[parts.length - 1];
-  }
-  if (lower.includes(":")) {
-    const parts = lower.split(":");
-    return parts[parts.length - 1];
-  }
-  return lower;
+function isPaseoBotPrefix(prefix: string): boolean {
+  const segments = prefix.split(/(?:__|[.:])/).filter((s) => s.length > 0);
+  if (segments.length === 0) return false;
+  const namespace = segments[segments.length - 1];
+  return namespace === "paseo-bot" || namespace === "paseo_bot";
 }
 
-function isBotTool(leaf: string): boolean {
-  return BOT_TOOL_PREFIXES.some((prefix) => leaf.startsWith(prefix));
+function parseBotToolName(rawName: string): PaseoBotToolName | null {
+  const lower = rawName.trim().toLowerCase();
+  if (!lower) return null;
+  if (PASEO_BOT_TOOL_SET.has(lower)) return lower as PaseoBotToolName;
+
+  const sepCandidates = [
+    { idx: lower.lastIndexOf("__"), len: 2 },
+    { idx: lower.lastIndexOf("."), len: 1 },
+    { idx: lower.lastIndexOf(":"), len: 1 },
+  ].filter((c) => c.idx >= 0);
+  if (sepCandidates.length === 0) return null;
+
+  sepCandidates.sort((a, b) => b.idx - a.idx);
+  const sep = sepCandidates[0];
+  const prefix = lower.slice(0, sep.idx);
+  const leaf = lower.slice(sep.idx + sep.len);
+  if (!PASEO_BOT_TOOL_SET.has(leaf) || !isPaseoBotPrefix(prefix)) return null;
+  return leaf as PaseoBotToolName;
 }
 
 function describeToolCall(
-  leaf: string,
+  tool: PaseoBotToolName,
   status: "running" | "completed" | "failed" | "canceled",
 ): { label: string; icon: string } {
   const running = status === "running";
   const failed = status === "failed";
-  if (leaf.startsWith("inbox_")) {
-    return {
-      icon: "Inbox",
-      label: failed ? "Inbox 记录失败" : running ? "正在记入 Inbox..." : "已静默记入 Inbox",
-    };
+  if (tool === "inbox_capture") {
+    return { icon: "Inbox", label: failed ? "Inbox 记录失败" : running ? "正在记入 Inbox..." : "已静默记入 Inbox" };
   }
-  if (leaf.startsWith("outbox_")) {
-    return {
-      icon: "Send",
-      label: failed ? "Outbox 投递失败" : running ? "正在投递 Outbox..." : "已投递结果至 Outbox",
-    };
+  if (tool === "inbox_list") {
+    return { icon: "Inbox", label: failed ? "Inbox 读取失败" : running ? "正在读取 Inbox..." : "已读取 Inbox 列表" };
   }
-  if (leaf === "thread_inspect" || leaf === "bot_inspect_thread") {
-    return {
-      icon: "Eye",
-      label: failed ? "线程穿透读取失败" : running ? "正在穿透读取线程..." : "已穿透读取线程摘要",
-    };
+  if (tool === "outbox_post") {
+    return { icon: "Send", label: failed ? "Outbox 投递失败" : running ? "正在投递 Outbox..." : "已投递结果至 Outbox" };
   }
-  if (leaf.startsWith("thread_") || leaf.includes("dispatch")) {
-    return {
-      icon: "GitBranch",
-      label: failed ? "任务线程派发失败" : running ? "正在派发任务线程..." : "已派发执行线程",
-    };
+  if (tool === "thread_inspect") {
+    return { icon: "Eye", label: failed ? "线程穿透读取失败" : running ? "正在穿透读取线程..." : "已穿透读取线程摘要" };
   }
-  return {
-    icon: "Bot",
-    label: failed ? `团队工具执行失败 (${leaf})` : running ? `正在同步团队状态 (${leaf})...` : `已完成团队协作 (${leaf})`,
-  };
+  if (tool === "bot_dispatch_thread") {
+    return { icon: "GitBranch", label: failed ? "任务线程派发失败" : running ? "正在派发任务线程..." : "已派发执行线程" };
+  }
+  return { icon: "Bot", label: failed ? "团队列表读取失败" : running ? "正在同步团队状态..." : "已同步团队成员" };
 }
 
-function BotEventPill({
-  theme,
-  item,
-}: PluginTimelineItemProps<BotTimelinePillData>) {
+function BotEventPill({ theme, item }: PluginTimelineItemProps<BotTimelinePillData>) {
   const { status, label, icon } = item.data;
   const accentColor =
     status === "failed"
@@ -105,14 +94,7 @@ function BotEventPill({
         }}
       >
         <Icon name={icon} size={12} color={accentColor} />
-        <Text
-          numberOfLines={1}
-          style={{
-            fontSize: 11.5,
-            fontWeight: "500",
-            color: accentColor,
-          }}
-        >
+        <Text numberOfLines={1} style={{ fontSize: 11.5, fontWeight: "500", color: accentColor }}>
           {label}
         </Text>
       </View>
@@ -129,17 +111,11 @@ function parseDispatchArgs(raw: string): { title: string; prompt: string } {
     if (title && prompt) return { title, prompt };
   }
   const firstLine = trimmed.split("\n")[0]?.trim() ?? trimmed;
-  return {
-    title: firstLine.slice(0, 60) || "新派发任务",
-    prompt: trimmed,
-  };
+  return { title: firstLine.slice(0, 60) || "新派发任务", prompt: trimmed };
 }
 
 export const timelinePolishFeature: ClientFeature = {
-  manifest: {
-    id: "timeline_polish",
-    name: "时间线轻事件与快捷指令",
-  },
+  manifest: { id: "timeline_polish", name: "时间线轻事件与快捷指令" },
   register(client: PluginClientContext) {
     const cleanups = [
       client.addSlashCommand({
@@ -153,11 +129,7 @@ export const timelinePolishFeature: ClientFeature = {
             ctx.openScreen({ screenId: "inbox-outbox", params: { tab: "inbox" } });
             return;
           }
-          await ctx.rpc(inboxAddRpc, {
-            rawText,
-            source: "user",
-            tags: [],
-          });
+          await ctx.rpc(inboxAddRpc, { rawText, source: "user", tags: [] });
         },
       }),
       client.addSlashCommand({
@@ -185,11 +157,15 @@ export const timelinePolishFeature: ClientFeature = {
             throw new Error("未找到可用的总管或项目主管 Bot，请先在 Bot 团队管理中创建。");
           }
           const parsed = parseDispatchArgs(raw);
+          const preferredCwd =
+            target.roleType === "project_lead" && target.defaultCwd.trim()
+              ? target.defaultCwd.trim()
+              : ctx.workspace.directory || target.defaultCwd;
           await ctx.rpc(threadDispatchRpc, {
             botId: target.id,
             title: parsed.title,
             prompt: parsed.prompt,
-            cwd: ctx.workspace.directory || target.defaultCwd,
+            cwd: preferredCwd,
             worktree: true,
           });
         },
@@ -200,9 +176,7 @@ export const timelinePolishFeature: ClientFeature = {
         icon: "UserRound",
         context: "agent",
         keywords: ["bot", "details", "详情", "团队"],
-        onSelect(ctx) {
-          ctx.openPanel("bot-details");
-        },
+        onSelect(ctx) { ctx.openPanel("bot-details"); },
       }),
       client.addCommandCenterItem({
         id: "paseo-bot.open-inbox-outbox",
@@ -210,17 +184,15 @@ export const timelinePolishFeature: ClientFeature = {
         icon: "Inbox",
         context: "agent",
         keywords: ["inbox", "outbox", "收发箱", "待办"],
-        onSelect(ctx) {
-          ctx.openScreen({ screenId: "inbox-outbox" });
-        },
+        onSelect(ctx) { ctx.openScreen({ screenId: "inbox-outbox" }); },
       }),
       client.addTimelineTransformer({
         id: "paseo-bot-tool-pill",
         query: { itemType: "tool_call" },
         transform({ item }) {
-          const leaf = extractToolLeaf(item.name);
-          if (!isBotTool(leaf)) return undefined;
-          const desc = describeToolCall(leaf, item.status);
+          const tool = parseBotToolName(item.name);
+          if (!tool) return undefined;
+          const desc = describeToolCall(tool, item.status);
           return {
             items: [
               {
@@ -228,12 +200,7 @@ export const timelinePolishFeature: ClientFeature = {
                 id: item.callId,
                 kind: "paseo-bot-event",
                 version: 1,
-                data: {
-                  tool: leaf,
-                  status: item.status,
-                  label: desc.label,
-                  icon: desc.icon,
-                },
+                data: { tool, status: item.status, label: desc.label, icon: desc.icon },
               },
             ],
           };
@@ -248,9 +215,7 @@ export const timelinePolishFeature: ClientFeature = {
     ];
 
     return () => {
-      while (cleanups.length > 0) {
-        void cleanups.pop()?.();
-      }
+      while (cleanups.length > 0) void cleanups.pop()?.();
     };
   },
 };

@@ -5,6 +5,20 @@ import { Pressable, Text, View, type StyleProp, type ViewStyle } from "react-nat
 
 export type AppTheme = PluginHostProps["theme"];
 
+function parseHexLuminance(hex: string): number | null {
+  const m = hex.trim().match(/^#([0-9a-fA-F]{6})$/);
+  if (!m) return null;
+  const num = Number.parseInt(m[1], 16);
+  return (0.299 * ((num >> 16) & 0xff) + 0.587 * ((num >> 8) & 0xff) + 0.114 * (num & 0xff)) / 255;
+}
+
+export function isDarkTheme(theme: AppTheme): boolean {
+  const bg = theme.colors.surface0.trim().toLowerCase();
+  if (bg === "#111113") return true;
+  const lum = parseHexLuminance(bg);
+  return lum !== null && lum < 0.5;
+}
+
 export interface BotAvatarProps {
   iconName: string;
   color: string;
@@ -12,6 +26,7 @@ export interface BotAvatarProps {
   showStar?: boolean;
   dotColor?: string | null;
   borderColor?: string;
+  theme?: AppTheme;
 }
 
 export function BotAvatar({
@@ -20,57 +35,24 @@ export function BotAvatar({
   size = 36,
   showStar = false,
   dotColor = null,
-  borderColor = "#FFFFFF",
+  borderColor,
+  theme,
 }: BotAvatarProps) {
   const iconSize = Math.round(size * 0.48);
   const badgeSize = Math.max(12, Math.round(size * 0.34));
+  const resolvedBorder = borderColor ?? theme?.colors.surface0 ?? "#FFFFFF";
+  const starBg = theme?.colors.statusWarning ?? "#D97706";
+  const starFg = theme?.colors.accentForeground ?? "#FFFFFF";
   return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        backgroundColor: `${color}1A`,
-        borderWidth: 1,
-        borderColor: `${color}40`,
-        alignItems: "center",
-        justifyContent: "center",
-      }}
-    >
+    <View style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: `${color}1A`, borderWidth: 1, borderColor: `${color}40`, alignItems: "center", justifyContent: "center" }}>
       <Icon name={iconName} size={iconSize} color={color} />
       {showStar ? (
-        <View
-          style={{
-            position: "absolute",
-            right: -2,
-            bottom: -2,
-            width: badgeSize,
-            height: badgeSize,
-            borderRadius: badgeSize / 2,
-            backgroundColor: "#F59E0B",
-            borderWidth: 1.5,
-            borderColor,
-            alignItems: "center",
-            justifyContent: "center",
-          }}
-        >
-          <Icon name="Star" size={Math.round(badgeSize * 0.58)} color="#FFFFFF" />
+        <View style={{ position: "absolute", right: -2, bottom: -2, width: badgeSize, height: badgeSize, borderRadius: badgeSize / 2, backgroundColor: starBg, borderWidth: 1.5, borderColor: resolvedBorder, alignItems: "center", justifyContent: "center" }}>
+          <Icon name="Star" size={Math.round(badgeSize * 0.58)} color={starFg} />
         </View>
       ) : null}
       {!showStar && dotColor ? (
-        <View
-          style={{
-            position: "absolute",
-            right: -1,
-            bottom: -1,
-            width: 10,
-            height: 10,
-            borderRadius: 5,
-            backgroundColor: dotColor,
-            borderWidth: 1.5,
-            borderColor,
-          }}
-        />
+        <View style={{ position: "absolute", right: -1, bottom: -1, width: 10, height: 10, borderRadius: 5, backgroundColor: dotColor, borderWidth: 1.5, borderColor: resolvedBorder }} />
       ) : null}
     </View>
   );
@@ -79,22 +61,36 @@ export function BotAvatar({
 export function RolePill({
   label,
   color,
+  theme,
   backgroundColor,
 }: {
   label: string;
   color: string;
-  backgroundColor: string;
+  theme: AppTheme;
+  backgroundColor?: string;
 }) {
+  const dark = isDarkTheme(theme);
+  const isHex = /^#[0-9a-fA-F]{6}$/.test(color.trim());
+  const fill = dark
+    ? isHex ? `${color}33` : (backgroundColor ?? theme.colors.surface2)
+    : (backgroundColor ?? (isHex ? `${color}1A` : theme.colors.surface2));
+  const borderColor = dark ? (isHex ? `${color}66` : theme.colors.border) : "transparent";
+  const textColor = dark ? theme.colors.foreground : color;
+
   return (
     <View
       style={{
         paddingHorizontal: 8,
         paddingVertical: 2,
         borderRadius: 999,
-        backgroundColor,
+        backgroundColor: fill,
+        borderWidth: dark ? 1 : 0,
+        borderColor,
       }}
     >
-      <Text style={{ fontSize: 11, fontWeight: "600", color }}>{label}</Text>
+      <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: "600", color: textColor }}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -138,15 +134,7 @@ export function SegmentTabs<Value extends string>({
   theme: AppTheme;
 }) {
   return (
-    <View
-      style={{
-        flexDirection: "row",
-        backgroundColor: theme.colors.surface2,
-        borderRadius: 10,
-        padding: 3,
-        gap: 4,
-      }}
-    >
+    <View style={{ flexDirection: "row", backgroundColor: theme.colors.surface2, borderRadius: 10, padding: 3, gap: 4 }}>
       {options.map((opt) => {
         const active = opt.value === value;
         return (
@@ -156,14 +144,16 @@ export function SegmentTabs<Value extends string>({
             onPress={() => onChange(opt.value)}
             style={{
               flex: 1,
+              minWidth: 0,
               paddingVertical: 6,
-              paddingHorizontal: 10,
+              paddingHorizontal: 8,
               borderRadius: 8,
               alignItems: "center",
               backgroundColor: active ? theme.colors.surface0 : "transparent",
             }}
           >
             <Text
+              numberOfLines={1}
               style={{
                 fontSize: 12.5,
                 fontWeight: active ? "600" : "500",
@@ -192,12 +182,7 @@ export function ActionButton({
   variant?: "primary" | "secondary" | "danger";
   disabled?: boolean;
 }) {
-  const bg =
-    variant === "primary"
-      ? theme.colors.accent
-      : variant === "danger"
-        ? theme.colors.statusDanger
-        : theme.colors.surface2;
+  const bg = variant === "primary" ? theme.colors.accent : variant === "danger" ? theme.colors.statusDanger : theme.colors.surface2;
   const fg = variant === "secondary" ? theme.colors.foreground : theme.colors.accentForeground;
   return (
     <Pressable
@@ -214,7 +199,9 @@ export function ActionButton({
         justifyContent: "center",
       }}
     >
-      <Text style={{ fontSize: 12.5, fontWeight: "600", color: fg }}>{label}</Text>
+      <Text numberOfLines={1} style={{ fontSize: 12.5, fontWeight: "600", color: fg }}>
+        {label}
+      </Text>
     </Pressable>
   );
 }

@@ -6,15 +6,18 @@ import type {
   PluginTurnOutcome,
 } from "@getpaseo/plugin/server";
 import type { AgentPermissionRequest } from "@getpaseo/protocol/agent-types";
-import type {
-  BotRecord,
-  DispatchedThread,
-  InboxItem,
-  InboxStatus,
-  PersistedHubState,
+import {
+  PASEO_BOT_TOOL_NAMES,
+  type BotRecord,
+  type DispatchedThread,
+  type InboxItem,
+  type InboxStatus,
+  type OutboxEnqueueEvent,
+  type PersistedHubState,
 } from "../../../shared/contracts";
-import type { OutboxEnqueueEvent, RecordThreadInput, RolePolicy } from "./schema";
+import type { RecordThreadInput, RolePolicy } from "./schema";
 
+const PASEO_BOT_TOOL_SET = new Set<string>(PASEO_BOT_TOOL_NAMES);
 const COMPANION_TOOLS: readonly string[] = ["inbox_capture"];
 const BUTLER_TOOLS: readonly string[] = [
   "bot_list",
@@ -81,6 +84,21 @@ export function checkToolAllowed(bots: readonly BotRecord[], agent: PluginHookAg
   return null;
 }
 
+export function canInspectThread(
+  state: PersistedHubState,
+  callerBot: BotRecord | undefined,
+  targetAgentId: string,
+): string | null {
+  if (!callerBot || callerBot.roleType !== "project_lead") return null;
+  if (targetAgentId === callerBot.agentId) return null;
+  const owned = state.threads.some(
+    (thread) => thread.agentId === targetAgentId && thread.botId === callerBot.id,
+  );
+  return owned
+    ? null
+    : `Project lead "${callerBot.id}" can only inspect threads dispatched under itself.`;
+}
+
 export function buildAgentOpenPatch(
   request: PluginSessionOpenRequest,
   bots: readonly BotRecord[],
@@ -95,15 +113,32 @@ export function buildAgentOpenPatch(
   const policy = buildRolePolicy(bot);
   const allowed = new Set(policy.allowedToolNames);
   const filteredTools = new Map<string, AgentToolDefinition>();
-  for (const tool of [...request.tools, ...definedTools]) {
-    if (allowed.has(tool.name)) filteredTools.set(tool.name, tool);
+
+  if (bot.roleType === "companion") {
+    for (const tool of [...request.tools, ...definedTools]) {
+      if (allowed.has(tool.name)) filteredTools.set(tool.name, tool);
+    }
+  } else {
+    for (const tool of request.tools) {
+      if (!PASEO_BOT_TOOL_SET.has(tool.name) || allowed.has(tool.name)) {
+        filteredTools.set(tool.name, tool);
+      }
+    }
+    for (const tool of definedTools) {
+      if (allowed.has(tool.name)) filteredTools.set(tool.name, tool);
+    }
   }
 
   const mergedPrompts = [...(request.appendSystemPrompt ?? [])];
   for (const line of policy.systemPromptLines) {
     if (line && !mergedPrompts.includes(line)) mergedPrompts.push(line);
   }
-  return { ...request, tools: [...filteredTools.values()], appendSystemPrompt: mergedPrompts };
+  return {
+    ...request,
+    tools: [...filteredTools.values()],
+    appendSystemPrompt: mergedPrompts,
+    ...(bot.roleType === "companion" ? { mcpServers: {} } : {}),
+  };
 }
 
 export function recordDispatchedThread(

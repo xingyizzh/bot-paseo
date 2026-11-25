@@ -1,5 +1,16 @@
-import { describe, expect, it } from "vitest";
-import { createEmptyHubState, DomainError, ERROR_CODES } from "../../../shared/contracts";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type { PaseoApi } from "@getpaseo/client";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { createEmptyHubState, DomainError, ERROR_CODES, type BotHubSnapshot } from "../../../shared/contracts";
+import { botArchiveRpc, botOpenSessionRpc, botSnapshotRpc, botUpsertRpc } from "../../../shared/rpc";
+import { createPaseoAdapter, type PaseoPort } from "../../adapters/paseo-adapter";
+import { ServerKernel } from "../../core/kernel";
+import { createLogger } from "../../core/logger";
+import { createJsonStateStore } from "../../core/store";
+import { botRegistryFeature } from "./adapter";
 import {
   archiveBot,
   bindBotAgent,
@@ -9,13 +20,25 @@ import {
   upsertSection,
 } from "./logic";
 
+const tempDirs: string[] = [];
+
+afterEach(() => {
+  while (tempDirs.length > 0) {
+    fs.rmSync(tempDirs.pop()!, { recursive: true, force: true });
+  }
+});
+
 describe("bot_registry pure logic", () => {
-  it("seeds default butler and companion bots once", () => {
+  it("seeds default butler and companion bots once and guards blank defaultCwd", () => {
     const empty = createEmptyHubState("2026-11-25T00:00:00Z");
     const seeded = seedDefaultBots(empty, "/tmp/work", "2026-11-25T00:00:00Z");
     expect(seeded.bots.map((b) => b.id)).toEqual(["butler", "companion"]);
     expect(seeded.bots[1].permissionMode).toBe("readonly");
     expect(seedDefaultBots(seeded, "/tmp/other")).toBe(seeded);
+
+    const blankCwdSeeded = seedDefaultBots(empty, "   ", "2026-11-25T00:00:00Z");
+    expect(blankCwdSeeded.bots[0].defaultCwd).toBe(".");
+    expect(blankCwdSeeded.bots[1].defaultCwd).toBe(".");
   });
 
   it("blocks elevating companion permission beyond readonly", () => {
@@ -93,5 +116,162 @@ describe("bot_registry pure logic", () => {
 
     state = archiveBot(state, { botId: "butler", archived: false }).nextState;
     expect(state.bots.find((b) => b.id === "butler")?.archivedAt).toBeNull();
+  });
+});
+
+describe("bot_registry adapter & paseo-adapter hardening", () => {
+  it("commits seeded snapshot with revision 1, rejects archived openSession, and reloads updated bot agents", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-bot-reg-"));
+    tempDirs.push(dir);
+    const handlers = new Map<string, (input: unknown, ctx: unknown) => Promise<unknown>>();
+    const server = {
+      handle(contract: { name: string }, handler: (input: unknown, ctx: unknown) => Promise<unknown>) {
+        handlers.set(contract.name, handler);
+      },
+      addHook() {
+        return () => {};
+      },
+    } as unknown as PluginServerContext;
+
+    const reloadedIds: string[] = [];
+    const adapter: PaseoPort = {
+      async resolveDefaultWorkspaceDir() {
+        return dir;
+      },
+      async ensureBotAgent() {
+        return { agentId: "agent-butler", created: true };
+      },
+      async reloadBotAgent(_paseo, agentId) {
+        reloadedIds.push(agentId);
+      },
+      async dispatchThread() {
+        return { agentId: "worker-1" };
+      },
+      async inspectThread(_paseo, agentId) {
+        return { agentId, status: "idle", title: null, cwd: dir, digests: [] };
+      },
+    };
+
+    const kernel = new ServerKernel({ server, store: createJsonStateStore(dir), logger: createLogger("test"), adapter });
+    kernel.register(botRegistryFeature);
+    const emitted: number[] = [];
+    kernel.events.on<BotHubSnapshot>("state.changed", (snap) => emitted.push(snap.revision));
+
+    const invoke = (name: string, input: unknown) => handlers.get(name)!(input, { paseo: {} });
+
+    const snap = (await invoke(botSnapshotRpc.name, {})) as BotHubSnapshot;
+    expect(snap.revision).toBe(1);
+    expect(emitted).toEqual([1]);
+
+    await invoke(botOpenSessionRpc.name, { botId: "butler" });
+    await invoke(botUpsertRpc.name, {
+      id: "butler",
+      name: "管家总管",
+      roleType: "butler",
+      bio: "Bio only",
+      personaPrompt: "你是工作总管家，只做拆解、分派与穿透验收，不亲自堆叠业务代码。",
+      provider: "claude/sonnet",
+      defaultCwd: dir,
+      permissionMode: "workspace",
+      sectionId: null,
+      pinned: true,
+    });
+    expect(reloadedIds).toEqual([]);
+
+    await invoke(botUpsertRpc.name, {
+      id: "butler",
+      name: "管家总管",
+      roleType: "butler",
+      bio: "Bio only",
+      personaPrompt: "Updated persona prompt",
+      provider: "claude/sonnet",
+      defaultCwd: dir,
+      permissionMode: "workspace",
+      sectionId: null,
+      pinned: true,
+    });
+    expect(reloadedIds).toEqual(["agent-butler"]);
+
+    await invoke(botArchiveRpc.name, { botId: "butler", archived: true });
+    await expect(invoke(botOpenSessionRpc.name, { botId: "butler" })).rejects.toMatchObject({
+      code: ERROR_CODES.PERMISSION_DENIED,
+    });
+    kernel.dispose();
+  });
+
+  it("recovers from stale agentId in ensureBotAgent and resolves modeId & ancestor .git in dispatchThread", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-git-root-"));
+    tempDirs.push(repoRoot);
+    fs.mkdirSync(path.join(repoRoot, ".git"));
+    const subDir = path.join(repoRoot, "packages", "sub");
+    fs.mkdirSync(subDir, { recursive: true });
+
+    const createCalls: Array<{ config: { provider: string; modeId?: string }; worktree?: { mode: string; newBranch?: string } }> = [];
+    const reloadCalls: string[] = [];
+    const paseo = {
+      projects: { async list() { return { projects: [] }; } },
+      providers: {
+        async snapshot() {
+          return { entries: [{ provider: "claude", enabled: true, status: "ready", models: [{ id: "sonnet" }] }] };
+        },
+        async listModes() {
+          return {
+            modes: [
+              { id: "plan", label: "Plan" },
+              { id: "acceptEdits", label: "Accept Edits" },
+              { id: "bypassPermissions", label: "Bypass" },
+            ],
+          };
+        },
+      },
+      agents: {
+        ref(id: string) {
+          return {
+            async refresh() {
+              throw new Error(`Agent ${id} not found`);
+            },
+            async reload() {
+              reloadCalls.push(id);
+            },
+            async send() {},
+          };
+        },
+        async list() {
+          return { entries: [] };
+        },
+        async create(opts: { config: { provider: string; modeId?: string }; worktree?: { mode: string; newBranch?: string } }) {
+          createCalls.push(opts);
+          return { id: `created-${createCalls.length}` };
+        },
+      },
+    } as unknown as PaseoApi;
+
+    const warnSpy = vi.fn();
+    const adapter = createPaseoAdapter({
+      info: vi.fn(),
+      warn: warnSpy,
+      error: vi.fn(),
+    });
+
+    const baseBot = seedDefaultBots(createEmptyHubState(), subDir).bots[1];
+    const ensured = await adapter.ensureBotAgent(paseo, { ...baseBot, agentId: "stale-agent-99" });
+    expect(ensured).toEqual({ agentId: "created-1", created: true });
+    expect(warnSpy).toHaveBeenCalled();
+    expect(createCalls[0].config).toEqual({ provider: "claude/sonnet", modeId: "plan" });
+
+    const leadBot = { ...baseBot, id: "lead-1", roleType: "project_lead" as const, permissionMode: "full" as const };
+    await adapter.dispatchThread(paseo, {
+      bot: leadBot,
+      title: "Subdir work",
+      prompt: "Run",
+      cwd: subDir,
+      worktree: true,
+    });
+    expect(createCalls[1].config).toEqual({ provider: "claude/sonnet", modeId: "bypassPermissions" });
+    expect(createCalls[1].worktree?.mode).toBe("branch-off");
+    expect(createCalls[1].worktree?.newBranch).toMatch(/^paseo-bot\/lead-1-[a-z0-9]+-[a-z0-9]{4}$/);
+
+    await adapter.reloadBotAgent(paseo, "created-1");
+    expect(reloadCalls).toEqual(["created-1"]);
   });
 });

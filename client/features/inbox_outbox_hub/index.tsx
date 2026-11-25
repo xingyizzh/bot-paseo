@@ -4,7 +4,7 @@ import type {
   PluginSidebarItemProps,
 } from "@getpaseo/plugin/client";
 import { ScrollView, SidebarRow, useToast } from "@getpaseo/plugin/client/ui";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { useHubActions, useHubSnapshot } from "../../core/hooks";
 import type { ClientFeature } from "../../core/kernel";
@@ -39,12 +39,12 @@ function InboxOutboxNavItem({
               height: 18,
               borderRadius: 9,
               paddingHorizontal: 6,
-              backgroundColor: unackedOutbox > 0 ? "#D97706" : theme.colors.accent,
+              backgroundColor: unackedOutbox > 0 ? theme.colors.statusWarning : theme.colors.accent,
               alignItems: "center",
               justifyContent: "center",
             }}
           >
-            <Text style={{ fontSize: 11, fontWeight: "700", color: "#FFFFFF" }}>
+            <Text style={{ fontSize: 11, fontWeight: "700", color: theme.colors.accentForeground }}>
               {totalBadge}
             </Text>
           </View>
@@ -69,6 +69,10 @@ function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenPr
   const { snapshot, isLoading } = useHubSnapshot();
   const { importHq } = useHubActions();
   const [tab, setTab] = useState<HubTab>(params.tab === "inbox" ? "inbox" : "outbox");
+
+  useEffect(() => {
+    if (params.tab === "inbox" || params.tab === "outbox") setTab(params.tab);
+  }, [params.tab]);
 
   const unackedCount = (snapshot?.outbox ?? []).filter((o) => o.status !== "acked").length;
   const openInboxCount = (snapshot?.inbox ?? []).filter(
@@ -102,7 +106,7 @@ function InboxOutboxScreen({ theme, layout, navigation, params }: PluginScreenPr
             gap: 10,
           }}
         >
-          <View style={{ gap: 2 }}>
+          <View style={{ gap: 2, flex: 1, minWidth: 180 }}>
             <Text style={{ fontSize: 18, fontWeight: "700", color: theme.colors.foreground }}>
               收发箱总控台
             </Text>

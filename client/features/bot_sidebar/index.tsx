@@ -11,8 +11,7 @@ import { useHubActions, useHubSnapshot } from "../../core/hooks";
 import type { ClientFeature } from "../../core/kernel";
 import { QuickCreateBotModal } from "./QuickCreateBotModal";
 import { SidebarBotList } from "./SidebarBotList";
-import { SidebarBottomBar, SidebarTopBar } from "./SidebarChrome";
-import { QuickInboxCaptureModal } from "./SidebarModals";
+import { QuickInboxCaptureModal, SidebarBottomBar, SidebarTopBar } from "./SidebarChrome";
 
 function isHeroBot(bot: BotRecord): boolean {
   return bot.roleType === "butler" || bot.roleType === "companion" || bot.pinned;
@@ -36,28 +35,33 @@ function BotSidebarView({
   const { openBotSession, upsertSection } = useHubActions();
   const agentRefs = useAgents();
   const attentionAgentRefs = useAgents({ where: (a) => a.requiresAttention });
-  const runningAgentRefs = useAgents({
-    where: (a) => a.status === "running" || a.status === "initializing",
-  });
+  const runningAgentRefs = useAgents({ where: (a) => a.status === "running" || a.status === "initializing" });
 
   const [openingBotId, setOpeningBotId] = useState<string | null>(null);
-  const [pendingAgentId, setPendingAgentId] = useState<string | null>(null);
+  const [pendingOpen, setPendingOpen] = useState<{ agentId: string; deadline: number } | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [inboxOpen, setInboxOpen] = useState(false);
   const [localCollapsed, setLocalCollapsed] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
-    if (!pendingAgentId) return;
-    const foundRef = agentRefs.find((ref) => ref.id === pendingAgentId) ?? null;
+    if (!pendingOpen) return;
+    const foundRef = agentRefs.find((ref) => ref.id === pendingOpen.agentId) ?? null;
     if (foundRef) {
-      setPendingAgentId(null);
+      setPendingOpen(null);
       navigation.openAgent(foundRef);
       dismiss();
-      return;
     }
-    const timer = setTimeout(() => setPendingAgentId(null), 10_000);
+  }, [agentRefs, dismiss, navigation, pendingOpen]);
+
+  useEffect(() => {
+    if (!pendingOpen) return;
+    const remainingMs = Math.max(0, pendingOpen.deadline - Date.now());
+    const timer = setTimeout(() => {
+      setPendingOpen((cur) => (cur?.agentId === pendingOpen.agentId ? null : cur));
+      toast.error("会话启动超时，请重试");
+    }, remainingMs);
     return () => clearTimeout(timer);
-  }, [agentRefs, dismiss, navigation, pendingAgentId]);
+  }, [pendingOpen, toast]);
 
   const handleOpenBot = useCallback(
     async (bot: BotRecord) => {
@@ -70,7 +74,7 @@ function BotSidebarView({
           navigation.openAgent(foundRef);
           dismiss();
         } else {
-          setPendingAgentId(res.agentId);
+          setPendingOpen({ agentId: res.agentId, deadline: Date.now() + 10_000 });
         }
       } catch (err) {
         toast.error(err instanceof Error ? err.message : "无法打开 Bot 会话");
@@ -105,22 +109,13 @@ function BotSidebarView({
     return map;
   }, [snapshot?.outbox]);
 
-  const activeBots = useMemo(
-    () => (snapshot?.bots ?? []).filter((b) => b.archivedAt === null),
-    [snapshot?.bots],
-  );
+  const activeBots = useMemo(() => (snapshot?.bots ?? []).filter((b) => b.archivedAt === null), [snapshot?.bots]);
   const heroBots = useMemo(
-    () =>
-      activeBots
-        .filter(isHeroBot)
-        .sort((a, b) => heroOrderWeight(a) - heroOrderWeight(b) || a.name.localeCompare(b.name)),
+    () => activeBots.filter(isHeroBot).sort((a, b) => heroOrderWeight(a) - heroOrderWeight(b) || a.name.localeCompare(b.name)),
     [activeBots],
   );
   const nonHeroBots = useMemo(() => activeBots.filter((b) => !isHeroBot(b)), [activeBots]);
-  const sortedSections = useMemo(
-    () => [...(snapshot?.sections ?? [])].sort((a, b) => a.order - b.order),
-    [snapshot?.sections],
-  );
+  const sortedSections = useMemo(() => [...(snapshot?.sections ?? [])].sort((a, b) => a.order - b.order), [snapshot?.sections]);
   const knownSectionIds = useMemo(() => new Set(sortedSections.map((s) => s.id)), [sortedSections]);
   const unsectionedBots = useMemo(
     () => nonHeroBots.filter((b) => !b.sectionId || !knownSectionIds.has(b.sectionId)),
@@ -131,29 +126,15 @@ function BotSidebarView({
     () => (snapshot?.inbox ?? []).filter((i) => i.status !== "done" && i.status !== "dropped").length,
     [snapshot?.inbox],
   );
-  const unackedOutbox = useMemo(
-    () => (snapshot?.outbox ?? []).filter((o) => o.status !== "acked"),
-    [snapshot?.outbox],
-  );
-
-  const hasUrgentOutbox = unackedOutbox.some(
-    (o) => o.kind === "needs_decision" || o.kind === "blocked",
-  );
+  const unackedOutbox = useMemo(() => (snapshot?.outbox ?? []).filter((o) => o.status !== "acked"), [snapshot?.outbox]);
+  const hasUrgentOutbox = unackedOutbox.some((o) => o.kind === "needs_decision" || o.kind === "blocked");
   const defaultCwd = activeBots[0]?.defaultCwd ?? "";
 
   const handleToggleSection = (section: BotSection, nextCollapsed: boolean) => {
     setLocalCollapsed((prev) => ({ ...prev, [section.id]: nextCollapsed }));
     void upsertSection
-      .mutateAsync({
-        id: section.id,
-        name: section.name,
-        collapsed: nextCollapsed,
-        order: section.order,
-        color: section.color,
-      })
-      .catch(() => {
-        setLocalCollapsed((prev) => ({ ...prev, [section.id]: !nextCollapsed }));
-      });
+      .mutateAsync({ id: section.id, name: section.name, collapsed: nextCollapsed, order: section.order, color: section.color })
+      .catch(() => setLocalCollapsed((prev) => ({ ...prev, [section.id]: !nextCollapsed })));
   };
 
   return (
@@ -162,10 +143,7 @@ function BotSidebarView({
         theme={theme}
         badgeCount={unackedOutbox.length + openInboxCount}
         hasUrgentOutbox={hasUrgentOutbox}
-        onOpenInboxHub={() => {
-          onOpenInboxHub();
-          dismiss();
-        }}
+        onOpenInboxHub={() => { onOpenInboxHub(); dismiss(); }}
         onOpenCreateModal={() => setCreateOpen(true)}
       />
 
@@ -196,23 +174,14 @@ function BotSidebarView({
         onPress={() => setInboxOpen(true)}
       />
 
-      <QuickCreateBotModal
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-        defaultCwd={defaultCwd}
-        usedColors={activeBots.map((b) => b.avatarColor)}
-        theme={theme}
-      />
+      <QuickCreateBotModal open={createOpen} onOpenChange={setCreateOpen} defaultCwd={defaultCwd} usedColors={activeBots.map((b) => b.avatarColor)} theme={theme} />
 
       <QuickInboxCaptureModal
         open={inboxOpen}
         onOpenChange={setInboxOpen}
         openInboxCount={openInboxCount}
         unackedOutboxCount={unackedOutbox.length}
-        onOpenHub={() => {
-          onOpenInboxHub();
-          dismiss();
-        }}
+        onOpenHub={() => { onOpenInboxHub(); dismiss(); }}
         theme={theme}
       />
     </View>
@@ -220,16 +189,10 @@ function BotSidebarView({
 }
 
 export const botSidebarFeature: ClientFeature = {
-  manifest: {
-    id: "bot_sidebar",
-    name: "DS-Bot 团队侧栏",
-  },
+  manifest: { id: "bot_sidebar", name: "DS-Bot 团队侧栏" },
   register(client: PluginClientContext) {
     const SidebarWrapper = (props: PluginSidebarViewProps) => (
-      <BotSidebarView
-        {...props}
-        onOpenInboxHub={() => client.openScreen({ screenId: "inbox-outbox" })}
-      />
+      <BotSidebarView {...props} onOpenInboxHub={() => client.openScreen({ screenId: "inbox-outbox" })} />
     );
     const cleanup = client.addSidebarView({
       id: "paseo-bot-sidebar",
@@ -237,8 +200,6 @@ export const botSidebarFeature: ClientFeature = {
       description: "DS-Bot 风格团队与双脑视图",
       Component: SidebarWrapper,
     });
-    return () => {
-      void cleanup();
-    };
+    return () => { void cleanup(); };
   },
 };

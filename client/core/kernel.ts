@@ -1,5 +1,6 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { DomainError, ERROR_CODES } from "../../shared/contracts";
+import { bindHubSubscription } from "./hooks";
 
 export interface ClientFeature {
   readonly manifest: { readonly id: string; readonly name: string };
@@ -11,7 +12,7 @@ export function registerClientFeatures(
   features: readonly ClientFeature[],
 ): () => void {
   const seen = new Set<string>();
-  const cleanups: (() => void)[] = [];
+  const cleanups: (() => void)[] = [bindHubSubscription(client)];
 
   for (const feature of features) {
     if (seen.has(feature.manifest.id)) {

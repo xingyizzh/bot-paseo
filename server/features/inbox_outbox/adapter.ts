@@ -1,7 +1,13 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ERROR_CODES } from "../../../shared/contracts";
+import {
+  ERROR_CODES,
+  type InboxCaptureEvent,
+  type InboxMarkDispatchedEvent,
+  type OutboxAckByAgentEvent,
+  type OutboxEnqueueEvent,
+} from "../../../shared/contracts";
 import {
   inboxAddRpc,
   inboxImportHqRpc,
@@ -9,21 +15,21 @@ import {
   outboxAckRpc,
   outboxAddRpc,
 } from "../../../shared/rpc";
-import type { ServerFeature } from "../../core/kernel";
+import type { FeatureManifest, ServerFeature } from "../../core/kernel";
 import type { Logger } from "../../core/logger";
 import {
+  ackOutboxByAgent,
   ackOutboxItem,
   addInboxItem,
   addOutboxItem,
   mergeImportedHq,
   updateInboxItem,
 } from "./logic";
-import { INBOX_OUTBOX_MANIFEST } from "./manifest";
-import type {
-  InboxCaptureEvent,
-  InboxMarkDispatchedEvent,
-  OutboxEnqueueEvent,
-} from "./schema";
+
+export const INBOX_OUTBOX_MANIFEST: FeatureManifest = {
+  id: "inbox_outbox",
+  name: "Inbox & Outbox Ledger",
+};
 
 function readJsonlSafe(filePath: string, logger: Logger, featureId: string): unknown[] {
   if (!fs.existsSync(filePath)) return [];
@@ -46,23 +52,19 @@ export const inboxOutboxFeature: ServerFeature = {
   register(kernel) {
     const id = INBOX_OUTBOX_MANIFEST.id;
 
-    kernel.handleRpc(id, inboxAddRpc, async (input) => {
-      const item = await kernel.store.update((state) => {
-        const { nextState, item: created } = addInboxItem(state, input);
-        return { nextState, result: created };
-      });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return item;
-    });
+    kernel.handleRpc(id, inboxAddRpc, async (input) =>
+      kernel.commitState(id, (state) => {
+        const { nextState, item } = addInboxItem(state, input);
+        return { nextState, result: item };
+      }),
+    );
 
-    kernel.handleRpc(id, inboxUpdateRpc, async (input) => {
-      const item = await kernel.store.update((state) => {
-        const { nextState, item: updated } = updateInboxItem(state, input);
-        return { nextState, result: updated };
-      });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return item;
-    });
+    kernel.handleRpc(id, inboxUpdateRpc, async (input) =>
+      kernel.commitState(id, (state) => {
+        const { nextState, item } = updateInboxItem(state, input);
+        return { nextState, result: item };
+      }),
+    );
 
     kernel.handleRpc(id, inboxImportHqRpc, async (input) => {
       const hqDir =
@@ -71,38 +73,30 @@ export const inboxOutboxFeature: ServerFeature = {
         path.join(os.homedir(), "ai", "personal-hq");
       const hqInbox = readJsonlSafe(path.join(hqDir, "inbox", "items.jsonl"), kernel.logger, id);
       const hqOutbox = readJsonlSafe(path.join(hqDir, "outbox", "items.jsonl"), kernel.logger, id);
-      const summary = await kernel.store.update((state) => {
+      return kernel.commitState(id, (state) => {
         const { nextState, importedInbox, importedOutbox } = mergeImportedHq(state, hqInbox, hqOutbox);
         return { nextState, result: { importedInbox, importedOutbox } };
       });
-      if (summary.importedInbox > 0 || summary.importedOutbox > 0) {
-        kernel.events.emit("state.changed", kernel.store.read());
-      }
-      return summary;
     });
 
-    kernel.handleRpc(id, outboxAddRpc, async (input) => {
-      const item = await kernel.store.update((state) => {
-        const { nextState, item: created } = addOutboxItem(state, input);
-        return { nextState, result: created };
-      });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return item;
-    });
+    kernel.handleRpc(id, outboxAddRpc, async (input) =>
+      kernel.commitState(id, (state) => {
+        const { nextState, item } = addOutboxItem(state, input);
+        return { nextState, result: item };
+      }),
+    );
 
-    kernel.handleRpc(id, outboxAckRpc, async (input) => {
-      const item = await kernel.store.update((state) => {
-        const { nextState, item: acked } = ackOutboxItem(state, input);
-        return { nextState, result: acked };
-      });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return item;
-    });
+    kernel.handleRpc(id, outboxAckRpc, async (input) =>
+      kernel.commitState(id, (state) => {
+        const { nextState, item } = ackOutboxItem(state, input);
+        return { nextState, result: item };
+      }),
+    );
 
     const offCapture = kernel.events.on<InboxCaptureEvent>("inbox.capture", (payload) => {
       payload.ackAccepted?.();
-      void kernel.store
-        .update((state) => {
+      void kernel
+        .commitState(id, (state) => {
           const { nextState, item } = addInboxItem(state, {
             rawText: payload.rawText,
             source: payload.source ?? "user",
@@ -113,10 +107,7 @@ export const inboxOutboxFeature: ServerFeature = {
           });
           return { nextState, result: item };
         })
-        .then((item) => {
-          kernel.events.emit("state.changed", kernel.store.read());
-          payload.resolve?.(item);
-        })
+        .then((item) => payload.resolve?.(item))
         .catch((err) => {
           kernel.logger.error(id, "inbox.capture", ERROR_CODES.ADAPTER_FAILURE, String(err));
           payload.reject?.(err);
@@ -125,8 +116,8 @@ export const inboxOutboxFeature: ServerFeature = {
 
     const offDispatched = kernel.events.on<InboxMarkDispatchedEvent>("inbox.markDispatched", (payload) => {
       payload.ackAccepted?.();
-      void kernel.store
-        .update((state) => {
+      void kernel
+        .commitState(id, (state) => {
           if (!state.inbox.some((entry) => entry.id === payload.inboxId)) {
             return { nextState: state, result: false };
           }
@@ -141,9 +132,7 @@ export const inboxOutboxFeature: ServerFeature = {
           return { nextState, result: true };
         })
         .then((updated) => {
-          if (updated) {
-            kernel.events.emit("state.changed", kernel.store.read());
-          } else {
+          if (!updated) {
             kernel.logger.warn(id, "inbox.markDispatched", `Inbox item not found: ${payload.inboxId}`);
           }
           payload.resolve?.();
@@ -156,8 +145,8 @@ export const inboxOutboxFeature: ServerFeature = {
 
     const offOutbox = kernel.events.on<OutboxEnqueueEvent>("outbox.enqueue", (payload) => {
       payload.ackAccepted?.();
-      void kernel.store
-        .update((state) => {
+      void kernel
+        .commitState(id, (state) => {
           const { nextState, item } = addOutboxItem(state, {
             kind: payload.kind,
             title: payload.title,
@@ -170,12 +159,27 @@ export const inboxOutboxFeature: ServerFeature = {
           });
           return { nextState, result: item };
         })
-        .then((item) => {
-          kernel.events.emit("state.changed", kernel.store.read());
-          payload.resolve?.(item);
-        })
+        .then((item) => payload.resolve?.(item))
         .catch((err) => {
           kernel.logger.error(id, "outbox.enqueue", ERROR_CODES.ADAPTER_FAILURE, String(err));
+          payload.reject?.(err);
+        });
+    });
+
+    const offAckByAgent = kernel.events.on<OutboxAckByAgentEvent>("outbox.ackByAgent", (payload) => {
+      payload.ackAccepted?.();
+      void kernel
+        .commitState(id, (state) => {
+          const { nextState, count } = ackOutboxByAgent(state, {
+            agentId: payload.agentId,
+            kind: payload.kind,
+            note: payload.note,
+          });
+          return { nextState, result: count };
+        })
+        .then((count) => payload.resolve?.(count))
+        .catch((err) => {
+          kernel.logger.error(id, "outbox.ackByAgent", ERROR_CODES.ADAPTER_FAILURE, String(err));
           payload.reject?.(err);
         });
     });
@@ -184,6 +188,7 @@ export const inboxOutboxFeature: ServerFeature = {
       offCapture();
       offDispatched();
       offOutbox();
+      offAckByAgent();
     };
   },
 };

@@ -154,3 +154,81 @@ export function createEmptyHubState(now = new Date().toISOString()): PersistedHu
     updatedAt: now,
   };
 }
+
+export const PASEO_BOT_TOOL_NAMES = [
+  "bot_list",
+  "inbox_capture",
+  "inbox_list",
+  "outbox_post",
+  "bot_dispatch_thread",
+  "thread_inspect",
+] as const;
+
+export type PaseoBotToolName = (typeof PASEO_BOT_TOOL_NAMES)[number];
+
+export const BOT_ROLE_OPTIONS: readonly { value: BotRoleType; label: string }[] = [
+  { value: "project_lead", label: "项目主管" },
+  { value: "butler", label: "管家总管" },
+  { value: "companion", label: "陪伴主位" },
+];
+
+export const BOT_PERMISSION_OPTIONS: readonly { value: BotPermissionMode; label: string }[] = [
+  { value: "readonly", label: "只读" },
+  { value: "workspace", label: "工作区" },
+  { value: "full", label: "完全" },
+];
+
+const OUTBOX_KIND_RANK: Record<OutboxKind, number> = {
+  needs_decision: 0,
+  blocked: 1,
+  delivered: 2,
+};
+
+export function sortOutboxItems(items: readonly OutboxItem[]): OutboxItem[] {
+  return [...items].sort((a, b) => {
+    const ackDiff = Number(a.status === "acked") - Number(b.status === "acked");
+    if (ackDiff !== 0) return ackDiff;
+    const rankDiff = OUTBOX_KIND_RANK[a.kind] - OUTBOX_KIND_RANK[b.kind];
+    if (rankDiff !== 0) return rankDiff;
+    return b.createdAt.localeCompare(a.createdAt);
+  });
+}
+
+export interface AckEventBase<Result = void> {
+  ackAccepted?: () => void;
+  resolve?: (value: Result) => void;
+  reject?: (err: unknown) => void;
+}
+
+export interface InboxCaptureEvent extends AckEventBase<InboxItem> {
+  rawText: string;
+  source?: InboxSource;
+  targetBotId?: string | null;
+  targetProject?: string | null;
+  tags?: string[];
+  note?: string;
+}
+
+export interface InboxMarkDispatchedEvent extends AckEventBase<void> {
+  inboxId: string;
+  botId: string;
+  agentId: string;
+  title: string;
+}
+
+export interface OutboxEnqueueEvent extends AckEventBase<OutboxItem> {
+  kind: OutboxKind;
+  title: string;
+  summary: string;
+  status?: OutboxStatus;
+  botId?: string | null;
+  agentId?: string | null;
+  threadLink?: string;
+  inboxId?: string | null;
+}
+
+export interface OutboxAckByAgentEvent extends AckEventBase<number> {
+  agentId: string;
+  kind?: OutboxKind;
+  note?: string;
+}

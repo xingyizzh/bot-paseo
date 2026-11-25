@@ -4,11 +4,6 @@ import {
   InboxStatusSchema,
   OutboxKindSchema,
   type BotRoleType,
-  type InboxItem,
-  type InboxSource,
-  type OutboxItem,
-  type OutboxKind,
-  type OutboxStatus,
 } from "../../../shared/contracts";
 import { threadDispatchRpc, threadInspectRpc } from "../../../shared/rpc";
 
@@ -29,42 +24,6 @@ export interface RecordThreadInput {
   worktree: boolean;
   inboxId?: string | null;
   status?: string;
-}
-
-export interface InboxCaptureEvent {
-  rawText: string;
-  source?: InboxSource;
-  targetBotId?: string | null;
-  targetProject?: string | null;
-  tags?: string[];
-  note?: string;
-  ackAccepted?: () => void;
-  resolve?: (item: InboxItem) => void;
-  reject?: (err: unknown) => void;
-}
-
-export interface InboxMarkDispatchedEvent {
-  inboxId: string;
-  botId: string;
-  agentId: string;
-  title: string;
-  ackAccepted?: () => void;
-  resolve?: () => void;
-  reject?: (err: unknown) => void;
-}
-
-export interface OutboxEnqueueEvent {
-  kind: OutboxKind;
-  title: string;
-  summary: string;
-  status?: OutboxStatus;
-  botId?: string | null;
-  agentId?: string | null;
-  threadLink?: string;
-  inboxId?: string | null;
-  ackAccepted?: () => void;
-  resolve?: (item: OutboxItem) => void;
-  reject?: (err: unknown) => void;
 }
 
 export const BotListToolInput = z.object({

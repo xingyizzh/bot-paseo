@@ -20,27 +20,59 @@ function writeAtomic(filePath: string, content: string): void {
   fs.renameSync(tmpPath, filePath);
 }
 
+function backupCorruptState(statePath: string): string {
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const suffix = Math.random().toString(36).slice(2, 6);
+  const backupPath = path.join(path.dirname(statePath), `hub-state.corrupt.${stamp}-${suffix}.json`);
+  try {
+    if (fs.existsSync(statePath)) {
+      fs.renameSync(statePath, backupPath);
+    }
+  } catch {
+    // Best-effort backup only.
+  }
+  return backupPath;
+}
+
+export interface StateCommit<Result> {
+  result: Result;
+  state: PersistedHubState;
+  changed: boolean;
+}
+
 export interface StateStore {
   readonly statePath: string;
   read(): PersistedHubState;
   update<Result>(
     mutator: (state: PersistedHubState) => { nextState: PersistedHubState; result: Result },
-  ): Promise<Result>;
+  ): Promise<StateCommit<Result>>;
 }
 
-export function createJsonStateStore(dataDir = resolveDataDir()): StateStore {
+export function createJsonStateStore(
+  dataDir = resolveDataDir(),
+  onError?: (msg: string) => void,
+): StateStore {
   const statePath = path.join(dataDir, "hub-state.json");
   let writeQueue: Promise<unknown> = Promise.resolve();
 
   function read(): PersistedHubState {
     if (!fs.existsSync(statePath)) return createEmptyHubState();
-    const raw = JSON.parse(fs.readFileSync(statePath, "utf8")) as unknown;
-    return PersistedHubStateSchema.parse(raw);
+    try {
+      const raw = JSON.parse(fs.readFileSync(statePath, "utf8")) as unknown;
+      return PersistedHubStateSchema.parse(raw);
+    } catch (err) {
+      const backupPath = backupCorruptState(statePath);
+      const detail = err instanceof Error ? err.message : String(err);
+      const msg = `Corrupt state at ${statePath} (backed up to ${backupPath}): ${detail}`;
+      if (onError) onError(msg);
+      else console.error(msg);
+      return createEmptyHubState();
+    }
   }
 
   function update<Result>(
     mutator: (state: PersistedHubState) => { nextState: PersistedHubState; result: Result },
-  ): Promise<Result> {
+  ): Promise<StateCommit<Result>> {
     const task = writeQueue.then(() => {
       const current = read();
       const { nextState, result } = mutator(current);
@@ -52,8 +84,9 @@ export function createJsonStateStore(dataDir = resolveDataDir()): StateStore {
         };
         const validated = PersistedHubStateSchema.parse(stamped);
         writeAtomic(statePath, `${JSON.stringify(validated, null, 2)}\n`);
+        return { result, state: validated, changed: true };
       }
-      return result;
+      return { result, state: current, changed: false };
     });
     writeQueue = task.catch(() => undefined);
     return task;

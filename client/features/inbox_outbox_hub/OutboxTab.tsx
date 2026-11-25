@@ -2,30 +2,19 @@ import type { PluginScreenProps } from "@getpaseo/plugin/client";
 import { Icon, useToast } from "@getpaseo/plugin/client/ui";
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import type { BotRecord, OutboxItem, OutboxKind } from "../../../shared/contracts";
+import {
+  sortOutboxItems,
+  type BotRecord,
+  type OutboxItem,
+  type OutboxKind,
+} from "../../../shared/contracts";
 import { useHubActions } from "../../core/hooks";
 import { ActionButton, RolePill, SurfaceCard, type AppTheme } from "../../core/primitives";
 
-const KIND_ORDER: Record<OutboxKind, number> = {
-  needs_decision: 0,
-  blocked: 1,
-  delivered: 2,
-};
-
 function kindPresentation(kind: OutboxKind, theme: AppTheme): { label: string; color: string } {
-  if (kind === "needs_decision") return { label: "待拍板", color: "#D97706" };
+  if (kind === "needs_decision") return { label: "待拍板", color: theme.colors.statusWarning };
   if (kind === "blocked") return { label: "阻塞中", color: theme.colors.statusDanger };
   return { label: "已交付", color: theme.colors.statusSuccess };
-}
-
-function sortOutboxItems(items: readonly OutboxItem[]): OutboxItem[] {
-  return [...items].sort((a, b) => {
-    const ackDiff = Number(a.status === "acked") - Number(b.status === "acked");
-    if (ackDiff !== 0) return ackDiff;
-    const kindDiff = KIND_ORDER[a.kind] - KIND_ORDER[b.kind];
-    if (kindDiff !== 0) return kindDiff;
-    return b.createdAt.localeCompare(a.createdAt);
-  });
 }
 
 export function OutboxTab({
@@ -65,15 +54,9 @@ export function OutboxTab({
     return (
       <SurfaceCard key={item.id} theme={theme} style={{ gap: 10, opacity: isAcked ? 0.72 : 1 }}>
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1 }}>
-            <RolePill label={badge.label} color={badge.color} backgroundColor={`${badge.color}1C`} />
-            {bot ? (
-              <RolePill
-                label={bot.name}
-                color={bot.avatarColor}
-                backgroundColor={`${bot.avatarColor}18`}
-              />
-            ) : null}
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
+            <RolePill label={badge.label} color={badge.color} theme={theme} />
+            {bot ? <RolePill label={bot.name} color={bot.avatarColor} theme={theme} /> : null}
           </View>
           <Text style={{ fontSize: 11.5, color: theme.colors.foregroundMuted }}>
             {item.createdAt.slice(0, 16).replace("T", " ")}

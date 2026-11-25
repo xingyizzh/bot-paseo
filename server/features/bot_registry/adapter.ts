@@ -1,4 +1,5 @@
 import os from "node:os";
+import { DomainError, ERROR_CODES } from "../../../shared/contracts";
 import {
   botArchiveRpc,
   botOpenSessionRpc,
@@ -7,9 +8,8 @@ import {
   botSnapshotRpc,
   botUpsertRpc,
 } from "../../../shared/rpc";
-import { DomainError, ERROR_CODES } from "../../../shared/contracts";
 import type { PaseoPort } from "../../adapters/paseo-adapter";
-import type { ServerFeature } from "../../core/kernel";
+import type { FeatureManifest, ServerFeature } from "../../core/kernel";
 import {
   archiveBot,
   bindBotAgent,
@@ -18,7 +18,11 @@ import {
   upsertBot,
   upsertSection,
 } from "./logic";
-import { BOT_REGISTRY_MANIFEST } from "./manifest";
+
+export const BOT_REGISTRY_MANIFEST: FeatureManifest = {
+  id: "bot_registry",
+  name: "Bot Registry & Sections",
+};
 
 export const botRegistryFeature: ServerFeature = {
   manifest: BOT_REGISTRY_MANIFEST,
@@ -30,50 +34,55 @@ export const botRegistryFeature: ServerFeature = {
       const current = kernel.store.read();
       if (current.bots.length > 0) return current;
       const defaultCwd = await adapter.resolveDefaultWorkspaceDir(ctx.paseo, os.homedir());
-      return kernel.store.update((state) => {
+      await kernel.commitState(id, (state) => {
         const seeded = seedDefaultBots(state, defaultCwd);
         return { nextState: seeded, result: seeded };
       });
+      return kernel.store.read();
     });
 
     kernel.handleRpc(id, botUpsertRpc, async (input, ctx) => {
       const resolvedCwd = input.defaultCwd.trim()
         ? input.defaultCwd.trim()
         : await adapter.resolveDefaultWorkspaceDir(ctx.paseo, os.homedir());
-      const bot = await kernel.store.update((state) => {
-        const { nextState, bot: saved } = upsertBot(state, { ...input, defaultCwd: resolvedCwd });
-        return { nextState, result: saved };
+      const { saved, needsReload } = await kernel.commitState(id, (state) => {
+        const prev = input.id ? state.bots.find((b) => b.id === input.id) : undefined;
+        const { nextState, bot } = upsertBot(state, { ...input, defaultCwd: resolvedCwd });
+        const changed =
+          prev !== undefined &&
+          bot.agentId !== null &&
+          (prev.personaPrompt !== bot.personaPrompt ||
+            prev.permissionMode !== bot.permissionMode ||
+            prev.provider !== bot.provider ||
+            prev.roleType !== bot.roleType);
+        return { nextState, result: { saved: bot, needsReload: changed } };
       });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return bot;
+      if (needsReload && saved.agentId) {
+        await adapter.reloadBotAgent(ctx.paseo, saved.agentId);
+      }
+      return saved;
     });
 
-    kernel.handleRpc(id, botArchiveRpc, async (input) => {
-      const bot = await kernel.store.update((state) => {
-        const { nextState, bot: saved } = archiveBot(state, input);
-        return { nextState, result: saved };
-      });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return bot;
-    });
+    kernel.handleRpc(id, botArchiveRpc, async (input) =>
+      kernel.commitState(id, (state) => {
+        const { nextState, bot } = archiveBot(state, input);
+        return { nextState, result: bot };
+      }),
+    );
 
-    kernel.handleRpc(id, botSectionUpsertRpc, async (input) => {
-      const section = await kernel.store.update((state) => {
-        const { nextState, section: saved } = upsertSection(state, input);
-        return { nextState, result: saved };
-      });
-      kernel.events.emit("state.changed", kernel.store.read());
-      return section;
-    });
+    kernel.handleRpc(id, botSectionUpsertRpc, async (input) =>
+      kernel.commitState(id, (state) => {
+        const { nextState, section } = upsertSection(state, input);
+        return { nextState, result: section };
+      }),
+    );
 
-    kernel.handleRpc(id, botSectionDeleteRpc, async (input) => {
-      const result = await kernel.store.update((state) => {
+    kernel.handleRpc(id, botSectionDeleteRpc, async (input) =>
+      kernel.commitState(id, (state) => {
         const { nextState, deleted } = deleteSection(state, input);
         return { nextState, result: { deleted } };
-      });
-      if (result.deleted) kernel.events.emit("state.changed", kernel.store.read());
-      return result;
-    });
+      }),
+    );
 
     kernel.handleRpc(id, botOpenSessionRpc, async (input, ctx) => {
       const state = kernel.store.read();
@@ -81,12 +90,19 @@ export const botRegistryFeature: ServerFeature = {
       if (!target) {
         throw new DomainError(id, "openSession", ERROR_CODES.NOT_FOUND, `Bot not found: ${input.botId}`);
       }
+      if (target.archivedAt !== null) {
+        throw new DomainError(
+          id,
+          "openSession",
+          ERROR_CODES.PERMISSION_DENIED,
+          `Cannot open session for archived bot: ${input.botId}`,
+        );
+      }
       const ensured = await adapter.ensureBotAgent(ctx.paseo, target, input.initialPrompt);
-      const bot = await kernel.store.update((latest) => {
+      const bot = await kernel.commitState(id, (latest) => {
         const { nextState, bot: updated } = bindBotAgent(latest, input.botId, ensured.agentId);
         return { nextState, result: updated };
       });
-      kernel.events.emit("state.changed", kernel.store.read());
       return { bot, agentId: ensured.agentId, created: ensured.created };
     });
   },

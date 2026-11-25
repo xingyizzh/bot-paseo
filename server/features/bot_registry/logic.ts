@@ -1,3 +1,4 @@
+import type { RpcInput } from "@getpaseo/plugin";
 import { pickNextColor } from "../../../shared/avatars";
 import {
   DomainError,
@@ -6,12 +7,21 @@ import {
   type BotSection,
   type PersistedHubState,
 } from "../../../shared/contracts";
-import type {
-  BotArchiveInput,
-  BotSectionDeleteInput,
-  BotSectionUpsertInput,
-  BotUpsertInput,
-} from "./schema";
+import {
+  botArchiveRpc,
+  botOpenSessionRpc,
+  botSectionDeleteRpc,
+  botSectionUpsertRpc,
+  botSnapshotRpc,
+  botUpsertRpc,
+} from "../../../shared/rpc";
+
+export type BotSnapshotInput = RpcInput<typeof botSnapshotRpc>;
+export type BotUpsertInput = RpcInput<typeof botUpsertRpc>;
+export type BotArchiveInput = RpcInput<typeof botArchiveRpc>;
+export type BotSectionUpsertInput = RpcInput<typeof botSectionUpsertRpc>;
+export type BotSectionDeleteInput = RpcInput<typeof botSectionDeleteRpc>;
+export type BotOpenSessionInput = RpcInput<typeof botOpenSessionRpc>;
 
 function makeId(prefix: string, existingIds: Set<string>, seedBase: string): string {
   const slug = seedBase
@@ -32,6 +42,7 @@ export function seedDefaultBots(
   now = new Date().toISOString(),
 ): PersistedHubState {
   if (state.bots.length > 0) return state;
+  const safeCwd = defaultCwd.trim() || ".";
   const butler: BotRecord = {
     id: "butler",
     name: "管家总管",
@@ -41,7 +52,7 @@ export function seedDefaultBots(
     iconName: "Crown",
     avatarColor: "#3B66F5",
     provider: "claude/sonnet",
-    defaultCwd,
+    defaultCwd: safeCwd,
     permissionMode: "workspace",
     sectionId: null,
     pinned: true,
@@ -59,7 +70,7 @@ export function seedDefaultBots(
     iconName: "Sparkles",
     avatarColor: "#6D28D9",
     provider: "claude/sonnet",
-    defaultCwd,
+    defaultCwd: safeCwd,
     permissionMode: "readonly",
     sectionId: null,
     pinned: true,

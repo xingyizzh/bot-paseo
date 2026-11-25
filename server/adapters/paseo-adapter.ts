@@ -4,6 +4,7 @@ import type { PaseoApi } from "@getpaseo/client";
 import {
   DomainError,
   ERROR_CODES,
+  type BotPermissionMode,
   type BotRecord,
   type ThreadMessageDigest,
 } from "../../shared/contracts";
@@ -16,6 +17,7 @@ export interface PaseoPort {
     bot: BotRecord,
     initialPrompt?: string,
   ): Promise<{ agentId: string; created: boolean }>;
+  reloadBotAgent(paseo: PaseoApi, agentId: string): Promise<void>;
   dispatchThread(
     paseo: PaseoApi,
     input: { bot: BotRecord; title: string; prompt: string; cwd: string; worktree: boolean },
@@ -31,6 +33,22 @@ export interface PaseoPort {
     cwd: string | null;
     digests: ThreadMessageDigest[];
   }>;
+}
+
+const MODE_PATTERNS: Record<BotPermissionMode, RegExp> = {
+  readonly: /plan|read.?only|ask/i,
+  full: /bypass|full|yolo|unrestricted/i,
+  workspace: /accept|workspace|auto|edit|default/i,
+};
+
+function hasGitAncestor(startDir: string): boolean {
+  let current = path.resolve(startDir);
+  while (true) {
+    if (fs.existsSync(path.join(current, ".git"))) return true;
+    const parent = path.dirname(current);
+    if (parent === current) return false;
+    current = parent;
+  }
 }
 
 function summarizeTimelineItem(item: Record<string, unknown>): ThreadMessageDigest | null {
@@ -64,6 +82,23 @@ async function resolveUsableProvider(paseo: PaseoApi, preferred: string): Promis
   return preferred;
 }
 
+async function resolveModeId(
+  paseo: PaseoApi,
+  resolvedProvider: string,
+  permissionMode: BotPermissionMode,
+): Promise<string | undefined> {
+  try {
+    const providerPrefix = resolvedProvider.split("/")[0];
+    if (!providerPrefix) return undefined;
+    const res = await paseo.providers.listModes(providerPrefix);
+    const pattern = MODE_PATTERNS[permissionMode];
+    const match = res.modes?.find((m) => pattern.test(m.id) || pattern.test(m.label));
+    return match?.id;
+  } catch {
+    return undefined;
+  }
+}
+
 export function createPaseoAdapter(logger: Logger): PaseoPort {
   return {
     async resolveDefaultWorkspaceDir(paseo, fallback) {
@@ -80,11 +115,15 @@ export function createPaseoAdapter(logger: Logger): PaseoPort {
     async ensureBotAgent(paseo, bot, initialPrompt) {
       try {
         if (bot.agentId) {
-          const ref = paseo.agents.ref(bot.agentId);
-          const refreshed = await ref.refresh();
-          if (refreshed?.agent && !refreshed.agent.archivedAt) {
-            if (initialPrompt) await ref.send(initialPrompt);
-            return { agentId: refreshed.agent.id, created: false };
+          try {
+            const ref = paseo.agents.ref(bot.agentId);
+            const refreshed = await ref.refresh();
+            if (refreshed?.agent && !refreshed.agent.archivedAt) {
+              if (initialPrompt) await ref.send(initialPrompt);
+              return { agentId: refreshed.agent.id, created: false };
+            }
+          } catch (err) {
+            logger.warn("paseo_adapter", "ensureBotAgent.refresh", String(err));
           }
         }
         const list = await paseo.agents.list();
@@ -99,8 +138,9 @@ export function createPaseoAdapter(logger: Logger): PaseoPort {
           return { agentId: found.agent.id, created: false };
         }
         const provider = await resolveUsableProvider(paseo, bot.provider);
+        const modeId = await resolveModeId(paseo, provider, bot.permissionMode);
         const created = await paseo.agents.create({
-          config: { provider },
+          config: { provider, ...(modeId ? { modeId } : {}) },
           cwd: bot.defaultCwd,
           title: bot.name,
           prompt: initialPrompt,
@@ -121,17 +161,27 @@ export function createPaseoAdapter(logger: Logger): PaseoPort {
       }
     },
 
+    async reloadBotAgent(paseo, agentId) {
+      try {
+        await paseo.agents.ref(agentId).reload();
+      } catch (err) {
+        logger.warn("paseo_adapter", "reloadBotAgent", String(err));
+      }
+    },
+
     async dispatchThread(paseo, input) {
       try {
         const provider = await resolveUsableProvider(paseo, input.bot.provider);
-        const isGitRepo = fs.existsSync(path.join(input.cwd, ".git"));
+        const modeId = await resolveModeId(paseo, provider, input.bot.permissionMode);
+        const isGitRepo = hasGitAncestor(input.cwd);
         const useWorktree = input.worktree && isGitRepo;
         if (input.worktree && !isGitRepo) {
           logger.warn("paseo_adapter", "dispatchThread", `Non-git cwd ${input.cwd}; launching without worktree`);
         }
-        const branch = `paseo-bot/${input.bot.id}-${Date.now().toString(36)}`;
+        const suffix = Math.random().toString(36).slice(2, 6).padEnd(4, "0");
+        const branch = `paseo-bot/${input.bot.id}-${Date.now().toString(36)}-${suffix}`;
         const created = await paseo.agents.create({
-          config: { provider },
+          config: { provider, ...(modeId ? { modeId } : {}) },
           cwd: input.cwd,
           parent: input.bot.agentId ?? undefined,
           title: input.title,

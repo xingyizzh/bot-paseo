@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { afterEach, describe, expect, it } from "vitest";
-import { createEmptyHubState, DomainError, ERROR_CODES } from "../../../shared/contracts";
+import {
+  createEmptyHubState,
+  DomainError,
+  ERROR_CODES,
+  type OutboxAckByAgentEvent,
+} from "../../../shared/contracts";
 import {
   inboxAddRpc,
   inboxImportHqRpc,
@@ -16,6 +21,7 @@ import { createLogger } from "../../core/logger";
 import { createJsonStateStore } from "../../core/store";
 import { inboxOutboxFeature } from "./adapter";
 import {
+  ackOutboxByAgent,
   ackOutboxItem,
   addInboxItem,
   addOutboxItem,
@@ -171,6 +177,24 @@ describe("inbox_outbox pure logic", () => {
     expect(secondAck.item.ackNote).toBe("approved");
   });
 
+  it("acks matching non-acked outbox items by agentId and optional kind", () => {
+    let state = createEmptyHubState("2026-11-25T00:00:00Z");
+    state = addOutboxItem(state, { kind: "needs_decision", title: "P1", summary: "s", agentId: "a-1" }, "2026-11-25T01:00:00Z").nextState;
+    state = addOutboxItem(state, { kind: "delivered", title: "D1", summary: "s", status: "delivered", agentId: "a-1" }, "2026-11-25T01:01:00Z").nextState;
+    state = addOutboxItem(state, { kind: "needs_decision", title: "P2", summary: "s", agentId: "a-2" }, "2026-11-25T01:02:00Z").nextState;
+
+    const res = ackOutboxByAgent(state, { agentId: "a-1", kind: "needs_decision", note: "Resolved" }, "2026-11-25T02:00:00Z");
+    expect(res.count).toBe(1);
+    expect(res.nextState.outbox[0].status).toBe("acked");
+    expect(res.nextState.outbox[0].ackNote).toBe("Resolved");
+    expect(res.nextState.outbox[1].status).toBe("delivered");
+    expect(res.nextState.outbox[2].status).toBe("pending");
+
+    const noOp = ackOutboxByAgent(res.nextState, { agentId: "a-1", kind: "needs_decision" });
+    expect(noOp.count).toBe(0);
+    expect(noOp.nextState).toBe(res.nextState);
+  });
+
   it("merges HQ JSONL objects idempotently and dedupes by id", () => {
     const empty = createEmptyHubState("2026-11-25T00:00:00Z");
     const hqInbox = [
@@ -225,7 +249,7 @@ describe("inbox_outbox pure logic", () => {
 });
 
 describe("inbox_outbox adapter RPC & event bus", () => {
-  it("handles RPC mutations, HQ JSONL import, and event bus persistence", async () => {
+  it("handles RPC mutations, HQ JSONL import, and event bus persistence including outbox.ackByAgent", async () => {
     const { dir, kernel, invoke } = createTestKernel();
     const revisions: number[] = [];
     kernel.events.on("state.changed", (snap: { revision: number }) => {
@@ -240,7 +264,7 @@ describe("inbox_outbox adapter RPC & event bus", () => {
       summary: "SQLite or JSON?",
       status: "pending",
       botId: "butler",
-      agentId: null,
+      agentId: "agent-55",
       threadLink: "",
       inboxId: addedIn.id,
     })) as { id: string };
@@ -275,19 +299,29 @@ describe("inbox_outbox adapter RPC & event bus", () => {
 
     await new Promise<{ id: string }>((resolve, reject) => {
       kernel.events.emit("outbox.enqueue", {
-        kind: "delivered",
-        title: "Done",
-        summary: "Finished work",
-        status: "delivered",
+        kind: "needs_decision",
+        title: "Approve Bash",
+        summary: "Run tests?",
+        status: "pending",
+        agentId: "agent-55",
         resolve,
         reject,
       });
     });
 
+    const ackedCount = await kernel.events.emitWithAck<number, OutboxAckByAgentEvent>("outbox.ackByAgent", {
+      agentId: "agent-55",
+      kind: "needs_decision",
+      note: "Resolved in Paseo",
+    });
+    expect(ackedCount).toBe(1);
+
     const finalState = kernel.store.read();
     expect(finalState.inbox.find((i) => i.id === captured.id)?.status).toBe("dispatched");
     expect(finalState.outbox).toHaveLength(2);
-    expect(revisions.length).toBeGreaterThanOrEqual(7);
+    expect(finalState.outbox[1].status).toBe("acked");
+    expect(finalState.outbox[1].ackNote).toBe("Resolved in Paseo");
+    expect(revisions.length).toBeGreaterThanOrEqual(8);
 
     kernel.dispose();
   });

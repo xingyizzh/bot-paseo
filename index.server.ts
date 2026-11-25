@@ -7,10 +7,13 @@ import { botRegistryFeature } from "./server/features/bot_registry/adapter";
 import { inboxOutboxFeature } from "./server/features/inbox_outbox/adapter";
 import { realtimeSyncFeature } from "./server/features/realtime_sync/adapter";
 import { threadBridgeFeature } from "./server/features/thread_bridge/adapter";
+import { ERROR_CODES } from "./shared/contracts";
 
 export default function contribute(server: PluginServerContext) {
   const logger = createLogger("paseo-bot");
-  const store = createJsonStateStore();
+  const store = createJsonStateStore(undefined, (msg) => {
+    logger.error("store", "read", ERROR_CODES.ADAPTER_FAILURE, msg);
+  });
   const adapter = createPaseoAdapter(logger);
   const kernel = new ServerKernel({ server, store, logger, adapter });
 

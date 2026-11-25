@@ -79,6 +79,7 @@ function makeOpenRequest(
     makeTool("thread_inspect"),
   ],
   appendSystemPrompt?: string[],
+  mcpServers: PluginSessionOpenRequest["mcpServers"] = {},
 ): PluginSessionOpenRequest {
   return {
     agentId: "agent-1",
@@ -94,12 +95,12 @@ function makeOpenRequest(
     appendSystemPrompt,
     tools,
     env: {},
-    mcpServers: {},
+    mcpServers,
   };
 }
 
 describe("thread_bridge pure logic", () => {
-  it("enforces strict companion dual-brain isolation", () => {
+  it("enforces strict companion dual-brain isolation and clears mcpServers", () => {
     const companion = makeBot({
       id: "companion",
       name: "陪伴主位",
@@ -116,7 +117,12 @@ describe("thread_bridge pure logic", () => {
     expect(promptBlock).toContain("keep it warm.");
 
     const patched = buildAgentOpenPatch(
-      makeOpenRequest({ "paseo-bot.botId": "companion" }, [], ["Existing host instruction"]),
+      makeOpenRequest(
+        { "paseo-bot.botId": "companion" },
+        [makeTool("github_search"), makeTool("bot_list")],
+        ["Existing host instruction"],
+        { github: { type: "stdio", command: "npx", args: ["-y", "mcp-github"] } },
+      ),
       [companion],
       [
         makeTool("bot_list"),
@@ -130,11 +136,12 @@ describe("thread_bridge pure logic", () => {
 
     expect(patched).toBeDefined();
     expect(patched?.tools.map((t) => t.name)).toEqual(["inbox_capture"]);
+    expect(patched?.mcpServers).toEqual({});
     expect(patched?.appendSystemPrompt?.[0]).toBe("Existing host instruction");
     expect(patched?.appendSystemPrompt?.some((line) => line.includes("ROLE GUARD [COMPANION]"))).toBe(true);
   });
 
-  it("grants butler all 6 tools and project_lead only dispatch/inspect/outbox", () => {
+  it("grants butler all 6 tools, project_lead dispatch/inspect/outbox, and preserves third-party tools", () => {
     const butler = makeBot({ id: "butler", roleType: "butler", personaPrompt: "Steward rule" });
     const lead = makeBot({
       id: "lead-a",
@@ -157,8 +164,22 @@ describe("thread_bridge pure logic", () => {
       "outbox_post",
     ]);
 
-    const butlerPatch = buildAgentOpenPatch(makeOpenRequest({ "paseo-bot.botId": "butler" }), [butler, lead]);
+    const requestToolsWithThirdParty = [
+      makeTool("third_party_search"),
+      makeTool("bot_list"),
+      makeTool("inbox_capture"),
+      makeTool("inbox_list"),
+      makeTool("outbox_post"),
+      makeTool("bot_dispatch_thread"),
+      makeTool("thread_inspect"),
+    ];
+
+    const butlerPatch = buildAgentOpenPatch(
+      makeOpenRequest({ "paseo-bot.botId": "butler" }, requestToolsWithThirdParty),
+      [butler, lead],
+    );
     expect(butlerPatch?.tools.map((t) => t.name)).toEqual([
+      "third_party_search",
       "bot_list",
       "inbox_capture",
       "inbox_list",
@@ -167,8 +188,12 @@ describe("thread_bridge pure logic", () => {
       "thread_inspect",
     ]);
 
-    const leadPatch = buildAgentOpenPatch(makeOpenRequest({ "paseo-bot.botId": "lead-a" }), [butler, lead]);
+    const leadPatch = buildAgentOpenPatch(
+      makeOpenRequest({ "paseo-bot.botId": "lead-a" }, requestToolsWithThirdParty),
+      [butler, lead],
+    );
     expect(leadPatch?.tools.map((t) => t.name)).toEqual([
+      "third_party_search",
       "outbox_post",
       "bot_dispatch_thread",
       "thread_inspect",
@@ -226,7 +251,7 @@ describe("thread_bridge pure logic", () => {
 });
 
 describe("thread_bridge adapter RPC, tools & hooks", () => {
-  it("runs tools, dispatch/inspect RPCs, and permission/turn hooks via kernel events", async () => {
+  it("runs tools, scoped thread_inspect, dispatch/inspect RPCs, and permission/turn hooks", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-thread-bridge-"));
     tempDirs.push(dir);
     const handlers = new Map<string, (input: unknown, ctx: unknown) => Promise<unknown>>();
@@ -258,7 +283,21 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
         bots: [
           makeBot({ id: "companion", roleType: "companion", permissionMode: "readonly" }),
           makeBot({ id: "butler", roleType: "butler" }),
-          makeBot({ id: "lead-1", roleType: "project_lead", defaultCwd: dir }),
+          makeBot({ id: "lead-1", roleType: "project_lead", defaultCwd: dir, agentId: "lead-1-home" }),
+          makeBot({ id: "lead-2", roleType: "project_lead", defaultCwd: dir, agentId: "lead-2-home" }),
+        ],
+        threads: [
+          {
+            agentId: "other-worker",
+            botId: "lead-2",
+            title: "Other lead task",
+            cwd: dir,
+            worktree: false,
+            inboxId: null,
+            status: "running",
+            createdAt: "2026-11-25T00:00:00Z",
+            updatedAt: "2026-11-25T00:00:00Z",
+          },
         ],
       },
       result: null,
@@ -271,6 +310,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       async ensureBotAgent() {
         return { agentId: "home-1", created: true };
       },
+      async reloadBotAgent() {},
       async dispatchThread() {
         return { agentId: "worker-1" };
       },
@@ -285,6 +325,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
     const capturedRaw: string[] = [];
     const dispatchedInbox: string[] = [];
     const outboxEvents: Array<{ kind: string; agentId?: string | null }> = [];
+    const ackedByAgent: Array<{ agentId: string; kind?: string; note?: string }> = [];
     kernel.events.on<{ rawText: string; ackAccepted?: () => void; resolve?: (v: unknown) => void }>(
       "inbox.capture",
       (p) => {
@@ -304,6 +345,14 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
         p.ackAccepted?.();
         outboxEvents.push({ kind: p.kind, agentId: p.agentId });
         p.resolve?.({ id: "out-1" });
+      },
+    );
+    kernel.events.on<{ agentId: string; kind?: string; note?: string; ackAccepted?: () => void; resolve?: (n: number) => void }>(
+      "outbox.ackByAgent",
+      (p) => {
+        p.ackAccepted?.();
+        ackedByAgent.push({ agentId: p.agentId, kind: p.kind, note: p.note });
+        p.resolve?.(1);
       },
     );
 
@@ -336,6 +385,11 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       id: "companion-home",
       metadata: { "paseo-bot.botId": "companion", "paseo-bot.roleType": "companion" },
     };
+    const lead1Agent: PluginHookAgent = {
+      ...butlerAgent,
+      id: "lead-1-home",
+      metadata: { "paseo-bot.botId": "lead-1", "paseo-bot.roleType": "project_lead" },
+    };
     const toolCtx: AgentToolContext = {
       agent: butlerAgent,
       paseo: {} as unknown as PaseoApi,
@@ -343,7 +397,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
     };
 
     const listRes = await toolMap.get("bot_list")!.execute({ includeArchived: false }, toolCtx);
-    expect((listRes.structuredContent as { bots: unknown[] }).bots).toHaveLength(3);
+    expect((listRes.structuredContent as { bots: unknown[] }).bots).toHaveLength(4);
 
     const capRes = await toolMap.get("inbox_capture")!.execute(
       { rawText: "Flash idea", tags: [] },
@@ -373,8 +427,21 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
     );
     expect(toolDispatchRes.isError).toBeUndefined();
 
-    const toolInspectRes = await toolMap.get("thread_inspect")!.execute({ agentId: "worker-1", limit: 5 }, toolCtx);
+    // Butler can inspect any thread; lead-1 can inspect worker-1 (owned) and itself, but NOT other-worker.
+    const toolInspectRes = await toolMap.get("thread_inspect")!.execute({ agentId: "other-worker", limit: 5 }, toolCtx);
     expect((toolInspectRes.structuredContent as { digests: unknown[] }).digests).toHaveLength(1);
+
+    const leadInspectOwn = await toolMap.get("thread_inspect")!.execute(
+      { agentId: "worker-1", limit: 5 },
+      { ...toolCtx, agent: lead1Agent },
+    );
+    expect(leadInspectOwn.isError).toBeUndefined();
+
+    const leadInspectOther = await toolMap.get("thread_inspect")!.execute(
+      { agentId: "other-worker", limit: 5 },
+      { ...toolCtx, agent: lead1Agent },
+    );
+    expect(leadInspectOther.isError).toBe(true);
 
     const dispatchRes = await handlers.get(threadDispatchRpc.name)?.(
       { botId: "lead-1", title: "Fix bug", prompt: "Fix it", worktree: true, inboxId: "in-20261125-0001" },
@@ -382,7 +449,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
     );
     expect((dispatchRes as { agentId: string }).agentId).toBe("worker-1");
     expect(dispatchedInbox).toEqual(["in-20261125-0001", "in-20261125-0001"]);
-    expect(store.read().threads).toHaveLength(1);
+    expect(store.read().threads).toHaveLength(2);
 
     const inspectRes = await handlers.get(threadInspectRpc.name)?.({ agentId: "worker-1", limit: 5 }, { paseo: {} });
     expect((inspectRes as { digests: unknown[] }).digests).toHaveLength(1);
@@ -405,6 +472,14 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       },
       hookCtx,
     );
+    await hooks.get("agent.permission.after")?.(
+      {
+        agent: workerAgent,
+        requestId: "perm-1",
+        resolution: { behavior: "allow" },
+      },
+      hookCtx,
+    );
     await hooks.get("agent.turn.after")?.(
       { agent: workerAgent, turnId: "t-1", outcome: { kind: "completed" } },
       hookCtx,
@@ -414,6 +489,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       hookCtx,
     );
 
+    expect(ackedByAgent).toEqual([{ agentId: "worker-1", kind: "needs_decision", note: "Resolved in Paseo" }]);
     expect(outboxEvents).toEqual([
       { kind: "delivered", agentId: "butler-home" },
       { kind: "needs_decision", agentId: "worker-1" },

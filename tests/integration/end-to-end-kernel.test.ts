@@ -80,8 +80,20 @@ function createHarness() {
           entries: [{ provider: "claude", enabled: true, status: "ready", models: [{ id: "sonnet" }] }],
         };
       },
+      async listModes() {
+        return {
+          modes: [
+            { id: "plan", label: "Plan" },
+            { id: "acceptEdits", label: "Accept Edits" },
+            { id: "bypassPermissions", label: "Bypass" },
+          ],
+        };
+      },
     },
     agents: {
+      async list() {
+        return { entries: [] };
+      },
       async create(opts: { cwd: string; metadata?: Record<string, unknown> }) {
         seq += 1;
         const created = { id: `agent-${seq}`, cwd: opts.cwd, metadata: opts.metadata };
@@ -90,6 +102,13 @@ function createHarness() {
       },
       ref(agentId: string) {
         return {
+          async refresh() {
+            return { agent: { id: agentId, archivedAt: null } };
+          },
+          async reload() {
+            return { agent: { id: agentId, archivedAt: null } };
+          },
+          async send() {},
           timeline: {
             async refetch() {
               return {
@@ -153,6 +172,7 @@ describe("end-to-end server plugin kernel", () => {
     const dispose = contributeServer(h.server);
 
     const initial = (await h.invokeRpc(botSnapshotRpc.name, {})) as BotHubSnapshot;
+    expect(initial.revision).toBe(1);
     expect(initial.bots.map((b) => b.id)).toEqual(["butler", "companion"]);
 
     const sub = h.subscribeHub();
@@ -235,6 +255,7 @@ describe("end-to-end server plugin kernel", () => {
       } satisfies PluginSessionOpenRequest,
     })) as PluginSessionOpenRequest;
     expect(companionPatch.tools.map((t) => t.name)).toEqual(["inbox_capture"]);
+    expect(companionPatch.mcpServers).toEqual({});
 
     const butlerPatch = (await h.emitHook("agent.open.before", {
       request: {
@@ -262,17 +283,19 @@ describe("end-to-end server plugin kernel", () => {
       "thread_inspect",
     ]);
 
+    const workerHookAgent = {
+      id: dispatched.agentId,
+      workspaceId: "ws-1",
+      parentAgentId: null,
+      provider: "claude/sonnet",
+      cwd: "/tmp/default-workspace",
+      title: "Build Feature",
+      background: false,
+      metadata: { "paseo-bot.botId": lead.id, "paseo-bot.kind": "worker-thread" },
+    };
+
     await h.emitHook("agent.permission.before", {
-      agent: {
-        id: dispatched.agentId,
-        workspaceId: "ws-1",
-        parentAgentId: null,
-        provider: "claude/sonnet",
-        cwd: "/tmp/default-workspace",
-        title: "Build Feature",
-        background: false,
-        metadata: { "paseo-bot.botId": lead.id, "paseo-bot.kind": "worker-thread" },
-      },
+      agent: workerHookAgent,
       request: {
         id: "perm-1",
         provider: "claude",
@@ -282,29 +305,25 @@ describe("end-to-end server plugin kernel", () => {
       },
     });
 
+    await h.emitHook("agent.permission.after", {
+      agent: workerHookAgent,
+      requestId: "perm-1",
+      resolution: { behavior: "allow" },
+    });
+
     await h.emitHook("agent.turn.after", {
-      agent: {
-        id: dispatched.agentId,
-        workspaceId: "ws-1",
-        parentAgentId: null,
-        provider: "claude/sonnet",
-        cwd: "/tmp/default-workspace",
-        title: "Build Feature",
-        background: false,
-        metadata: { "paseo-bot.botId": lead.id, "paseo-bot.kind": "worker-thread" },
-      },
+      agent: workerHookAgent,
       turnId: "turn-1",
       outcome: { kind: "completed" },
     });
-
-    // Wait one microtask tick for fire-and-forget event listeners to commit store writes.
-    await new Promise((resolve) => setTimeout(resolve, 25));
 
     const latest = (await h.invokeRpc(botSnapshotRpc.name, {})) as BotHubSnapshot;
     const updatedInbox = latest.inbox.find((item) => item.id === inbox.id);
     expect(updatedInbox?.status).toBe("dispatched");
     expect(updatedInbox?.rawText).toBe("Keep original user thought intact across dispatch");
-    expect(latest.outbox.some((item) => item.kind === "needs_decision" && item.inboxId === inbox.id)).toBe(true);
+    const permOutbox = latest.outbox.find((item) => item.kind === "needs_decision" && item.inboxId === inbox.id);
+    expect(permOutbox?.status).toBe("acked");
+    expect(permOutbox?.ackNote).toBe("Resolved in Paseo");
     expect(latest.outbox.some((item) => item.kind === "delivered" && item.inboxId === inbox.id)).toBe(true);
     expect(sub.snapshots.length).toBeGreaterThan(2);
 

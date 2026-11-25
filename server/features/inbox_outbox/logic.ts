@@ -1,6 +1,7 @@
 import {
   DomainError,
   ERROR_CODES,
+  sortOutboxItems,
   type InboxItem,
   type OutboxItem,
   type OutboxKind,
@@ -15,11 +16,7 @@ import {
   type OutboxAckInput,
 } from "./schema";
 
-const OUTBOX_KIND_PRIORITY: Readonly<Record<OutboxKind, number>> = {
-  needs_decision: 0,
-  blocked: 1,
-  delivered: 2,
-};
+export { sortOutboxItems };
 
 function extractDateStamp(now: string): string {
   const m = now.match(/^(\d{4})-(\d{2})-(\d{2})/);
@@ -194,16 +191,26 @@ export function ackOutboxItem(
   };
 }
 
-export function sortOutboxItems(items: readonly OutboxItem[]): OutboxItem[] {
-  return [...items].sort((a, b) => {
-    const ackDiff = (a.status === "acked" ? 1 : 0) - (b.status === "acked" ? 1 : 0);
-    if (ackDiff !== 0) return ackDiff;
-    const kindDiff = OUTBOX_KIND_PRIORITY[a.kind] - OUTBOX_KIND_PRIORITY[b.kind];
-    if (kindDiff !== 0) return kindDiff;
-    const tsDiff = Date.parse(b.createdAt) - Date.parse(a.createdAt);
-    if (!Number.isNaN(tsDiff) && tsDiff !== 0) return tsDiff;
-    return b.createdAt.localeCompare(a.createdAt);
+export function ackOutboxByAgent(
+  state: PersistedHubState,
+  input: { agentId: string; kind?: OutboxKind; note?: string },
+  now = new Date().toISOString(),
+): { nextState: PersistedHubState; count: number } {
+  let count = 0;
+  const outbox = state.outbox.map((entry) => {
+    if (entry.agentId !== input.agentId) return entry;
+    if (input.kind && entry.kind !== input.kind) return entry;
+    if (entry.status === "acked") return entry;
+    count += 1;
+    return {
+      ...entry,
+      status: "acked" as const,
+      ackedAt: entry.ackedAt ?? now,
+      ackNote: input.note !== undefined ? input.note : entry.ackNote,
+    };
   });
+  if (count === 0) return { nextState: state, count: 0 };
+  return { nextState: { ...state, outbox }, count };
 }
 
 export function mergeImportedHq(
