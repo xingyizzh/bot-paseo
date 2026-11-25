@@ -139,7 +139,7 @@ function BotSidebarView({
   const hasUrgentOutbox = unackedOutbox.some(
     (o) => o.kind === "needs_decision" || o.kind === "blocked",
   );
-  const defaultCwd = activeBots[0]?.defaultCwd ?? "/Users/xingyi/ai";
+  const defaultCwd = activeBots[0]?.defaultCwd ?? "";
 
   const handleToggleSection = (section: BotSection, nextCollapsed: boolean) => {
     setLocalCollapsed((prev) => ({ ...prev, [section.id]: nextCollapsed }));

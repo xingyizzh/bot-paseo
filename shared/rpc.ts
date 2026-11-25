@@ -33,7 +33,7 @@ export const botUpsertRpc = defineRpc({
     iconName: z.string().min(1).optional(),
     avatarColor: z.string().min(4).optional(),
     provider: z.string().min(1).default("claude/sonnet"),
-    defaultCwd: z.string().min(1),
+    defaultCwd: z.string().default(""),
     permissionMode: BotPermissionModeSchema.default("workspace"),
     sectionId: z.string().nullable().default(null),
     pinned: z.boolean().default(false),
@@ -112,7 +112,7 @@ export const inboxUpdateRpc = defineRpc({
 export const inboxImportHqRpc = defineRpc({
   name: "paseo-bot.inbox.import-hq",
   input: z.object({
-    hqDir: z.string().default("/Users/xingyi/ai/personal-hq"),
+    hqDir: z.string().default(""),
   }),
   output: z.object({
     importedInbox: z.number().int().nonnegative(),

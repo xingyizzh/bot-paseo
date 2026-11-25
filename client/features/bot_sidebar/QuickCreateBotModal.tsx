@@ -144,7 +144,7 @@ export function QuickCreateBotModal({
             <TextInput
               value={cwd}
               onChangeText={setCwd}
-              placeholder="/Users/xingyi/ai"
+              placeholder="/path/to/workspace（留空使用默认工作区）"
               placeholderTextColor={theme.colors.foregroundMuted}
               style={inputStyle}
             />

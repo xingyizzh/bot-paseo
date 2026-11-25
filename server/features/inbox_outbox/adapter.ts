@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { ERROR_CODES } from "../../../shared/contracts";
 import {
@@ -64,8 +65,12 @@ export const inboxOutboxFeature: ServerFeature = {
     });
 
     kernel.handleRpc(id, inboxImportHqRpc, async (input) => {
-      const hqInbox = readJsonlSafe(path.join(input.hqDir, "inbox", "items.jsonl"), kernel.logger, id);
-      const hqOutbox = readJsonlSafe(path.join(input.hqDir, "outbox", "items.jsonl"), kernel.logger, id);
+      const hqDir =
+        input.hqDir.trim() ||
+        process.env.PASEO_BOT_HQ_DIR?.trim() ||
+        path.join(os.homedir(), "ai", "personal-hq");
+      const hqInbox = readJsonlSafe(path.join(hqDir, "inbox", "items.jsonl"), kernel.logger, id);
+      const hqOutbox = readJsonlSafe(path.join(hqDir, "outbox", "items.jsonl"), kernel.logger, id);
       const summary = await kernel.store.update((state) => {
         const { nextState, importedInbox, importedOutbox } = mergeImportedHq(state, hqInbox, hqOutbox);
         return { nextState, result: { importedInbox, importedOutbox } };

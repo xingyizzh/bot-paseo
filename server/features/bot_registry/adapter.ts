@@ -36,9 +36,12 @@ export const botRegistryFeature: ServerFeature = {
       });
     });
 
-    kernel.handleRpc(id, botUpsertRpc, async (input) => {
+    kernel.handleRpc(id, botUpsertRpc, async (input, ctx) => {
+      const resolvedCwd = input.defaultCwd.trim()
+        ? input.defaultCwd.trim()
+        : await adapter.resolveDefaultWorkspaceDir(ctx.paseo, os.homedir());
       const bot = await kernel.store.update((state) => {
-        const { nextState, bot: saved } = upsertBot(state, input);
+        const { nextState, bot: saved } = upsertBot(state, { ...input, defaultCwd: resolvedCwd });
         return { nextState, result: saved };
       });
       kernel.events.emit("state.changed", kernel.store.read());

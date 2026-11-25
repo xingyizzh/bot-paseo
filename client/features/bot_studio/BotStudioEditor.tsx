@@ -32,7 +32,7 @@ export function BotStudioEditor({
     return showArchived ? all : all.filter((b) => b.archivedAt === null);
   }, [showArchived, snapshot?.bots]);
 
-  const fallbackCwd = snapshot?.bots[0]?.defaultCwd ?? "/Users/xingyi/ai";
+  const fallbackCwd = snapshot?.bots[0]?.defaultCwd ?? "";
   const usedColors = useMemo(() => (snapshot?.bots ?? []).map((b) => b.avatarColor), [snapshot?.bots]);
 
   const selectedBot = useMemo(() => {
@@ -42,7 +42,7 @@ export function BotStudioEditor({
     return visibleBots[0] ?? null;
   }, [selectedId, snapshot?.bots, visibleBots]);
 
-  const [draft, setDraft] = useState<BotFormDraft>(() => makeBlankDraft([], "/Users/xingyi/ai"));
+  const [draft, setDraft] = useState<BotFormDraft>(() => makeBlankDraft([], ""));
 
   useEffect(() => {
     if (initialBotId) setSelectedId(initialBotId);

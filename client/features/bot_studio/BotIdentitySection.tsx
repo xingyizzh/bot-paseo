@@ -133,7 +133,7 @@ export function BotIdentitySection({
           <TextInput
             value={draft.defaultCwd}
             onChangeText={(defaultCwd) => onPatch({ defaultCwd })}
-            placeholder="/Users/xingyi/ai"
+            placeholder="/path/to/workspace（留空使用默认工作区）"
             placeholderTextColor={theme.colors.foregroundMuted}
             style={inputStyle}
           />
