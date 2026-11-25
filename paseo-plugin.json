@@ -1,0 +1,9 @@
+{
+  "id": "paseo-bot",
+  "name": "Paseo Bot",
+  "description": "Native microkernel Bot team, Companion/Butler isolation, and Inbox/Outbox for Paseo",
+  "media": [],
+  "requirements": {
+    "paseo": ">=0.17.0"
+  }
+}
