@@ -11,7 +11,7 @@ import {
   type PluginServerContext,
   type PluginSessionOpenRequest,
 } from "@getpaseo/plugin/server";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import {
   createEmptyHubState,
@@ -34,6 +34,7 @@ import {
   buildRolePolicy,
   checkToolAllowed,
   recordDispatchedThread,
+  resolveOwnPluginToolName,
 } from "./logic";
 
 const tempDirs: string[] = [];
@@ -263,6 +264,13 @@ describe("thread_bridge pure logic", () => {
     expect(checkToolAllowed(bots, makeHookAgent("lead-a", "project_lead"), "outbox_ack")).toBeTruthy();
     expect(checkToolAllowed(bots, makeHookAgent("butler", "butler"), "bot_dispatch_thread", false)).toContain("纯 Bot 模式");
     expect(checkToolAllowed(bots, makeHookAgent("lead-a", "project_lead"), "thread_inspect", false)).toContain("纯 Bot 模式");
+  });
+
+  it("resolves only own plugin tool names with optional mcp__paseo__ prefix", () => {
+    expect(resolveOwnPluginToolName("mcp__paseo__inbox_capture")).toBe("inbox_capture");
+    expect(resolveOwnPluginToolName("outbox_list")).toBe("outbox_list");
+    expect(resolveOwnPluginToolName("mcp__paseo__create_agent")).toBeNull();
+    expect(resolveOwnPluginToolName("Bash")).toBeNull();
   });
 
   it("builds grouped Muse-style outbox digest prompt with optional thread references", () => {
@@ -698,6 +706,11 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       { agent: butlerWorkerAgent, turnId: "t-3", outcome: { kind: "failed", error: { message: "Lint failed" } } },
       hookCtx,
     );
+    // Failed project_lead bot-home QA turn also escalates to Outbox as blocked so errors are not swallowed
+    await hooks.get("agent.turn.after")?.(
+      { agent: { ...lead1Agent, metadata: { "paseo-bot.botId": "lead-1", "paseo-bot.kind": "bot-home", "paseo-bot.roleType": "project_lead" } }, turnId: "t-4", outcome: { kind: "failed", error: { message: "QA provider timeout" } } },
+      hookCtx,
+    );
 
     expect(ackedByAgent).toEqual([{ agentId: "worker-1", kind: "needs_decision", note: "Resolved in Paseo" }]);
     expect(outboxEvents).toEqual([
@@ -705,6 +718,7 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       { kind: "needs_decision", agentId: "worker-1" },
       { kind: "delivered", agentId: "worker-1" },
       { kind: "blocked", agentId: "butler-worker-1" },
+      { kind: "blocked", agentId: "lead-1-home" },
     ]);
 
     const outListRes = await toolMap.get("outbox_list")!.execute({ includeAcked: false, limit: 10 }, toolCtx);
@@ -777,6 +791,84 @@ describe("thread_bridge adapter RPC, tools & hooks", () => {
       toolCtx,
     );
     expect(disabledToolInspect.isError).toBe(true);
+
+    // Auto-approve / auto-deny own plugin MCP tools in agent.permission.before without Outbox noise
+    const outboxCountBeforeAuto = outboxEvents.length;
+    const permResponses: Array<{ agentId: string; options: unknown }> = [];
+    const permHookCtx = {
+      paseo: {
+        agents: {
+          ref(agentId: string) {
+            return {
+              respondToPermission: vi.fn(async (options: unknown) => {
+                permResponses.push({ agentId, options });
+              }),
+            };
+          },
+        },
+      },
+      signal: new AbortController().signal,
+    } as unknown as PluginHookContext;
+    const compPermAgent: PluginHookAgent = {
+      id: "comp-home",
+      workspaceId: "ws-1",
+      parentAgentId: null,
+      provider: "claude/sonnet",
+      cwd: dir,
+      title: "Companion",
+      background: false,
+      metadata: { "paseo-bot.botId": "companion", "paseo-bot.roleType": "companion" },
+    };
+
+    await hooks.get("agent.permission.before")?.(
+      {
+        agent: compPermAgent,
+        request: {
+          id: "perm-comp-1",
+          provider: "claude",
+          name: "mcp__paseo__inbox_capture",
+          kind: "tool",
+          title: "Capture idea",
+          input: { text: "hello" },
+        },
+      },
+      permHookCtx,
+    );
+    expect(permResponses[0]).toEqual({
+      agentId: "comp-home",
+      options: {
+        requestId: "perm-comp-1",
+        response: { behavior: "allow", updatedInput: { text: "hello" } },
+      },
+    });
+    expect(outboxEvents).toHaveLength(outboxCountBeforeAuto);
+
+    await hooks.get("agent.permission.before")?.(
+      {
+        agent: compPermAgent,
+        request: { id: "perm-comp-2", provider: "claude", name: "mcp__paseo__outbox_list", kind: "tool", title: "List outbox" },
+      },
+      permHookCtx,
+    );
+    expect(permResponses[1]).toMatchObject({
+      agentId: "comp-home",
+      options: {
+        requestId: "perm-comp-2",
+        response: { behavior: "deny" },
+      },
+    });
+    expect(outboxEvents).toHaveLength(outboxCountBeforeAuto);
+
+    await hooks.get("agent.permission.before")?.(
+      {
+        agent: workerAgent,
+        request: { id: "perm-bash-2", provider: "claude", name: "Bash", kind: "tool", title: "Run tests" },
+      },
+      permHookCtx,
+    );
+    expect(permResponses).toHaveLength(2);
+    expect(outboxEvents).toHaveLength(outboxCountBeforeAuto + 1);
+    expect(outboxEvents[outboxEvents.length - 1]).toEqual({ kind: "needs_decision", agentId: "worker-1" });
 
     kernel.dispose();
   });

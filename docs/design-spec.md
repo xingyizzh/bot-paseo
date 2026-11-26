@@ -1,6 +1,6 @@
 # Paseo Bot —— DS-Bot 级视觉与交互设计规范
 
-本规范对齐 [team.zh.png](file:///Users/xingyi/ai/DS-Bot/docs/images/team.zh.png) 与 [details.zh.png](file:///Users/xingyi/ai/DS-Bot/docs/images/details.zh.png) 的克制质感，基于 React Native 原语实现（iOS / Android / Web / Electron 一致）。
+本规范对齐 DS-Bot 团队列表与详情抽屉的克制视觉风格，基于 React Native 原语实现（iOS / Android / Web / Electron 一致）。
 
 ## 1. 双主题精确色板
 

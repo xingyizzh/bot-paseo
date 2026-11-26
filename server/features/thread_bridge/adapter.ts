@@ -15,6 +15,8 @@ import {
   buildAgentOpenPatch,
   buildPermissionOutboxPayload,
   buildTurnOutboxPayload,
+  checkToolAllowed,
+  resolveOwnPluginToolName,
   updateDispatchedThreadStatus,
 } from "./logic";
 import {
@@ -124,7 +126,39 @@ export const threadBridgeFeature: ServerFeature = {
     const offOpen = kernel.addHook("agent.open.before", async (payload) =>
       buildAgentOpenPatch(payload.request, kernel.store.read().bots, tools, isThreadsEnabled(kernel, adapter)),
     );
-    const offPerm = kernel.addHook("agent.permission.before", async (payload) => {
+    const offPerm = kernel.addHook("agent.permission.before", async (payload, ctx) => {
+      const ownTool = resolveOwnPluginToolName(payload.request.name);
+      if (ownTool && ctx.paseo?.agents?.ref) {
+        const denied = checkToolAllowed(
+          kernel.store.read().bots,
+          payload.agent,
+          ownTool,
+          isThreadsEnabled(kernel, adapter),
+        );
+        try {
+          await ctx.paseo.agents.ref(payload.agent.id).respondToPermission({
+            requestId: payload.request.id,
+            response:
+              denied === null
+                ? {
+                    behavior: "allow",
+                    ...(payload.request.input && typeof payload.request.input === "object"
+                      ? { updatedInput: payload.request.input as Record<string, unknown> }
+                      : {}),
+                  }
+                : { behavior: "deny", message: denied },
+          });
+          return;
+        } catch (err) {
+          kernel.logger.warn(
+            "thread_bridge",
+            "agent.permission.before",
+            `Auto permission response failed for ${payload.agent.id} (${ownTool}): ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          );
+        }
+      }
       const matched = kernel.store.read().threads.find((entry) => entry.agentId === payload.agent.id);
       const outbox = buildPermissionOutboxPayload(payload.agent, payload.request, matched?.inboxId ?? null);
       if (outbox) await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", outbox);
@@ -137,7 +171,33 @@ export const threadBridgeFeature: ServerFeature = {
       });
     });
     const offTurn = kernel.addHook("agent.turn.after", async (payload, ctx) => {
-      if (payload.agent.metadata?.["paseo-bot.kind"] !== "worker-thread") return;
+      const kind = payload.agent.metadata?.["paseo-bot.kind"];
+      if (
+        kind === "bot-home" &&
+        payload.agent.metadata?.["paseo-bot.roleType"] === "project_lead" &&
+        payload.outcome.kind === "failed"
+      ) {
+        const metaId = payload.agent.metadata?.["paseo-bot.botId"];
+        const botId = typeof metaId === "string" && metaId ? metaId : null;
+        const botName =
+          (botId ? kernel.store.read().bots.find((b) => b.id === botId)?.name : null) ||
+          payload.agent.title?.trim() ||
+          botId ||
+          "项目主管";
+        const errText = payload.outcome.error.message?.trim() || `Project lead "${botName}" failed its turn.`;
+        await kernel.events.emitWithAck<OutboxItem, OutboxEnqueueEvent>("outbox.enqueue", {
+          kind: "blocked",
+          title: `项目主管异常: ${botName}`.slice(0, 120),
+          summary: errText.slice(0, 2000),
+          status: "pending",
+          botId,
+          agentId: payload.agent.id,
+          threadLink: "",
+          inboxId: null,
+        });
+        return;
+      }
+      if (kind !== "worker-thread") return;
       if (payload.outcome.kind !== "completed" && payload.outcome.kind !== "failed") return;
       const latestState = kernel.store.read();
       const matched = latestState.threads.find((entry) => entry.agentId === payload.agent.id);

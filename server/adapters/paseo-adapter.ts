@@ -6,6 +6,7 @@ import {
   ERROR_CODES,
   type BotPermissionMode,
   type BotRecord,
+  type BotRoleType,
   type ThreadMessageDigest,
 } from "../../shared/contracts";
 import type { Logger } from "../core/logger";
@@ -18,6 +19,41 @@ const MODE_PATTERNS: Record<BotPermissionMode, RegExp> = {
   full: /bypass|full|yolo|unrestricted/i,
   workspace: /accept|workspace|auto|edit|default/i,
 };
+
+const ROLE_MCP_TOOLS: Record<BotRoleType, readonly string[]> = {
+  companion: ["inbox_capture"],
+  butler: [
+    "bot_list",
+    "inbox_capture",
+    "inbox_list",
+    "outbox_post",
+    "outbox_list",
+    "outbox_ack",
+    "bot_dispatch_thread",
+    "thread_inspect",
+  ],
+  project_lead: ["bot_dispatch_thread", "thread_inspect", "outbox_post"],
+};
+
+function buildRoleProviderOptions(resolvedProvider: string, roleType: BotRoleType) {
+  const prefix = resolvedProvider.split("/")[0];
+  if (prefix !== "claude") return undefined;
+  return {
+    allowedTools: ROLE_MCP_TOOLS[roleType].map((tool) => `mcp__paseo__${tool}`),
+  };
+}
+
+async function ensureAgentMcpInjection(paseo: PaseoApi, logger: Logger): Promise<void> {
+  if (!paseo.config?.get || !paseo.config?.patch) return;
+  try {
+    const res = await paseo.config.get();
+    if (res.config?.mcp?.injectIntoAgents !== true) {
+      await paseo.config.patch({ mcp: { injectIntoAgents: true } });
+    }
+  } catch (err) {
+    logger.warn("paseo_adapter", "ensureAgentMcpInjection", String(err));
+  }
+}
 
 function hasGitAncestor(startDir: string): boolean {
   let current = path.resolve(startDir);
@@ -105,6 +141,7 @@ export function createPaseoAdapter(logger: Logger): ExecutionPort {
     async ensureBotAgent(host, bot, initialPrompt) {
       try {
         const paseo = requirePaseo(host, "ensureBotAgent");
+        await ensureAgentMcpInjection(paseo, logger);
         if (bot.agentId) {
           try {
             const ref = paseo.agents.ref(bot.agentId);
@@ -130,8 +167,9 @@ export function createPaseoAdapter(logger: Logger): ExecutionPort {
         }
         const provider = await resolveUsableProvider(paseo, bot.provider);
         const modeId = await resolveModeId(paseo, provider, bot.permissionMode);
+        const options = buildRoleProviderOptions(provider, bot.roleType);
         const created = await paseo.agents.create({
-          config: { provider, ...(modeId ? { modeId } : {}) },
+          config: { provider, ...(modeId ? { modeId } : {}), ...(options ? { options } : {}) },
           cwd: bot.defaultCwd,
           title: bot.name,
           prompt: initialPrompt,
@@ -164,6 +202,7 @@ export function createPaseoAdapter(logger: Logger): ExecutionPort {
     async dispatchThread(host, input) {
       try {
         const paseo = requirePaseo(host, "dispatchThread");
+        await ensureAgentMcpInjection(paseo, logger);
         const provider = await resolveUsableProvider(paseo, input.bot.provider);
         const modeId = await resolveModeId(paseo, provider, input.bot.permissionMode);
         const isGitRepo = hasGitAncestor(input.cwd);

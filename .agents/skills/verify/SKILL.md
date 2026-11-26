@@ -9,8 +9,9 @@ description: Read-only verification procedure for paseo-bot against static gates
 
 ## 1. Static Gates, Boundaries & Test Suite
 
+Run from the repository root:
+
 ```bash
-cd /Users/xingyi/ai/paseo-bot
 npm run check
 ```
 
@@ -23,7 +24,6 @@ Verifies:
 ## 2. Isolated Real Paseo Daemon E2E Verification
 
 ```bash
-cd /Users/xingyi/ai/paseo-bot
 npm run verify
 ```
 
@@ -36,7 +36,6 @@ Verifies inside a fresh temporary `PASEO_HOME` (`PASEO_WEB_UI_ENABLED=true`, `pl
 ## 3. Fault-Injection Negative Gate Verification (All 3 MUST Exit Non-Zero)
 
 ```bash
-cd /Users/xingyi/ai/paseo-bot
 npm run verify -- --inject-fault missing-manifest
 npm run verify -- --inject-fault bad-plugin-syntax
 npm run verify -- --inject-fault broken-daemon-port

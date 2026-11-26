@@ -19,6 +19,14 @@ import type { RecordThreadInput, RolePolicy } from "./schema";
 
 const PASEO_BOT_TOOL_SET = new Set<string>(PASEO_BOT_TOOL_NAMES);
 const THREAD_TOOL_SET = new Set<string>(["bot_dispatch_thread", "thread_inspect"]);
+const PASEO_MCP_PREFIX = "mcp__paseo__";
+
+export function resolveOwnPluginToolName(requestName: string): string | null {
+  const bare = requestName.startsWith(PASEO_MCP_PREFIX)
+    ? requestName.slice(PASEO_MCP_PREFIX.length)
+    : requestName;
+  return PASEO_BOT_TOOL_SET.has(bare) ? bare : null;
+}
 const COMPANION_TOOLS: readonly string[] = ["inbox_capture"];
 const BUTLER_TOOLS: readonly string[] = [
   "bot_list",
@@ -48,7 +56,7 @@ export function buildRolePolicy(bot: BotRecord, threadsEnabled = true): RolePoli
       allowedToolNames: COMPANION_TOOLS,
       systemPromptLines: [
         "ROLE GUARD [COMPANION]: Keep conversation warm, empathetic, and natural. STRICTLY FORBIDDEN: never output source code, stack traces, diffs, shell commands, or engineering diagnostics.",
-        "TOOL ISOLATION: You only have inbox_capture to silently record spontaneous user thoughts verbatim; never attempt thread dispatch, inspection, or outbox management.",
+        "TOOL ISOLATION: Call inbox_capture directly (exposed on the paseo MCP server, e.g. mcp__paseo__inbox_capture) to silently record spontaneous user thoughts verbatim; never attempt thread dispatch, inspection, or outbox management.",
         ...(persona ? [persona] : []),
       ],
     };
@@ -58,7 +66,7 @@ export function buildRolePolicy(bot: BotRecord, threadsEnabled = true): RolePoli
       roleType: "butler",
       allowedToolNames: gateThreadTools(BUTLER_TOOLS, threadsEnabled),
       systemPromptLines: [
-        "ROLE GUARD [BUTLER]: Triage Inbox items, review Outbox via outbox_list, coordinate project leads, and deliver Muse-style concise human summaries (strictly no raw tool logs, shell commands, diffs, or stack traces). After reporting, call outbox_ack on summarized delivered items, and keep needs_decision/blocked items unacked until resolved. Do not write application code directly.",
+        "ROLE GUARD [BUTLER]: Triage Inbox items, review Outbox directly via paseo MCP tool outbox_list (mcp__paseo__outbox_list), coordinate project leads, and deliver Muse-style concise human summaries (strictly no raw tool logs, shell commands, diffs, or stack traces). After reporting, call outbox_ack (mcp__paseo__outbox_ack) on summarized delivered items, and keep needs_decision/blocked items unacked until resolved. Do not write application code directly.",
         ...(persona ? [persona] : []),
       ],
     };
@@ -67,7 +75,7 @@ export function buildRolePolicy(bot: BotRecord, threadsEnabled = true): RolePoli
     roleType: "project_lead",
     allowedToolNames: gateThreadTools(PROJECT_LEAD_TOOLS, threadsEnabled),
     systemPromptLines: [
-      `ROLE GUARD [PROJECT_LEAD]: Own project quality inside "${bot.defaultCwd}". Dispatch worker threads, inspect finished threads with thread_inspect before accepting, re-dispatch fixes when needed, and only call outbox_post (passing threadAgentId) to report quality-verified deliveries, blockers, or decisions to Butler.`,
+      `ROLE GUARD [PROJECT_LEAD]: Own project quality inside "${bot.defaultCwd}". Use paseo MCP tools directly (bot_dispatch_thread, thread_inspect, outbox_post) to dispatch worker threads, inspect finished threads with thread_inspect before accepting, re-dispatch fixes when needed, and only call outbox_post (passing threadAgentId) to report quality-verified deliveries, blockers, or decisions to Butler.`,
       ...(persona ? [persona] : []),
     ],
   };

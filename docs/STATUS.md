@@ -26,12 +26,13 @@
 |---|---|---|
 | 架构与门禁 | [AGENTS.md](../AGENTS.md)、[ARCHITECTURE.md](../ARCHITECTURE.md)、[design-spec.md](./design-spec.md)、[feature-map.md](./feature-map.md)、`scripts/check.mjs` + `tests/gates/` | 已完成（5/5 夹具全拦截） |
 | 可插拔执行适配器 | `server/adapters/{execution-port.ts,paseo-adapter.ts,null-execution.ts}` | 已完成（含无 Paseo 降级实现与单测） |
-| 全栈入口与端到端测试 | `index.server.ts` (26L)、`index.client.tsx` (17L)、6 组 Vitest 套件（28/28 通过） | 已完成 |
-| 隔离沙盒实跑 | `npm run verify`（真起 Paseo v0.17.4 daemon、编译 111 KB+ 客户端包、RPC/订阅/开关切换）+ `--inject-fault missing-manifest` 拦截 | 已完成（全绿） |
+| 全栈入口与端到端测试 | `index.server.ts` (26L)、`index.client.tsx` (17L)、6 组 Vitest 套件（29/29 通过） | 已完成 |
+| 隔离沙盒与实机发消息 | `npm run verify` + 真实 LLM 4 场景联调（陪伴 `inbox_capture` 免打扰自动过审、Worktree 子线程与分 Bot `thread_inspect` 质检、管家 `workspace` 模式 Muse 归档、纯 Bot 降级切换） | 已完成（全绿） |
 
 ## 变更记录
 
 - `d7546ec`..`b1619c7`：搭建脚手架、AST 门禁、`shared/` 契约、微内核及 `FEAT-001`..`005` 初始模块。
 - `dff2d7e`..`2e5a4d2`：接线双端根入口、清除硬编码个人路径、独立红队审计修复（损坏状态备份恢复、EventBus 超时/异常隔离、`hub.subscribe` 去重、Bot Studio 防脏写与表单垂直流收敛）。
 - `6f31889`..`010fb60`：落地 `scripts/verify.mjs` 隔离沙盒验收、`feature-map.md`、`timeline_polish` 合法 ID 修复与 DS-Bot Light/Dark 语义对比度抛光（含 1280×800 与 390×844 实机截图检查）。
-- 当前収口提交：落盘可插拔 `ExecutionPort` + `null-execution`、`settings.paseoEnabled` 纯 Bot / Paseo 切换、分 Bot 质检上报（`worker turn.after` → 分 Bot `thread_inspect` → `outbox_post(threadAgentId)`）及管家 Muse 风格 Outbox 整理汇报闭环。
+- `4801b31`：落盘可插拔 `ExecutionPort` + `null-execution`、`settings.paseoEnabled` 纯 Bot / Paseo 切换、分 Bot 质检上报（`worker turn.after` → 分 Bot `thread_inspect` → `outbox_post(threadAgentId)`）及管家 Muse 风格 Outbox 整理汇报闭环。
+- 实机发消息收口：补齐 `ensureAgentMcpInjection`（自动开启 `daemon.mcp.injectIntoAgents` 与 Claude `allowedTools`）、`agent.permission.before` 自有插件 MCP 工具按角色自动放行/拦截（避免 `readonly`/`workspace` 模式阻塞 `inbox_capture`/`outbox_list`/`outbox_ack`）及项目主管 QA 回合失败向 Outbox `blocked` 上报，完成本机 `~/.paseo` 实装验证与 GitHub 发布。

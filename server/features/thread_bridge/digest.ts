@@ -48,7 +48,7 @@ export function buildOutboxDigestPrompt(
     "汇报规范（Muse 风格）：",
     "1. 用自然简洁的人话向用户统一汇报，严禁复述工具日志、命令输出、堆栈或过程废话。",
     "2. 每条只说三件事：① 结论、② 需要用户拍板/补充的事（如有）、③ 对应线程标题（方便用户需要时点击穿透查看）。",
-    "3. 汇报完所有条目后，对每一条已汇报的 delivered 类条目调用 outbox_ack 归档；needs_decision 与 blocked 保持未确认直到用户拍板或问题解除。",
+    "3. 汇报完所有条目后，对每一条已汇报的 delivered 类条目直接调用 paseo MCP 工具 outbox_ack（即 mcp__paseo__outbox_ack）归档；needs_decision 与 blocked 保持未确认直到用户拍板或问题解除。",
   );
 
   return sections.join("\n");
@@ -76,9 +76,9 @@ export function buildWorkerReviewPrompt(input: WorkerReviewPromptInput): string 
     `- 线程 Agent ID: ${input.threadAgentId}${inboxPart}`,
     `- 尾部摘要: ${compactText(input.tailSummary, 600)}`,
     "",
-    "请按项目质量把关流程处理：",
-    `1. 先调用 thread_inspect(agentId="${input.threadAgentId}") 检查真实产出与质量；未验收前不要直接报给管家。`,
+    "请按项目质量把关流程处理（所需工具均在 paseo MCP 服务上，可直接调用）：",
+    `1. 先直接调用 thread_inspect(agentId="${input.threadAgentId}") 检查真实产出与质量；未验收前不要直接报给管家。`,
     "2. 若质量不达标或仍需修复，直接在你名下继续派发/追问线程返工。",
-    `3. 仅当确认交付达标、确认阻塞或需要用户拍板时，调用 outbox_post（务必传入 threadAgentId="${input.threadAgentId}"${inboxArg}）向管家正式汇报。`,
+    `3. 仅当确认交付达标、确认阻塞或需要用户拍板时，直接调用 outbox_post（务必传入 threadAgentId="${input.threadAgentId}"${inboxArg}）向管家正式汇报。`,
   ].join("\n");
 }

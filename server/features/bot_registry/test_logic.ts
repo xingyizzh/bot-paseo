@@ -268,9 +268,24 @@ describe("bot_registry adapter & paseo-adapter hardening", () => {
     const subDir = path.join(repoRoot, "packages", "sub");
     fs.mkdirSync(subDir, { recursive: true });
 
-    const createCalls: Array<{ config: { provider: string; modeId?: string }; worktree?: { mode: string; newBranch?: string } }> = [];
+    const createCalls: Array<{
+      config: { provider: string; modeId?: string; options?: { allowedTools?: string[] } };
+      worktree?: { mode: string; newBranch?: string };
+    }> = [];
     const reloadCalls: string[] = [];
+    const configPatches: Array<Record<string, unknown>> = [];
+    let injectIntoAgents = false;
     const paseo = {
+      config: {
+        async get() {
+          return { config: { mcp: { enabled: true, injectIntoAgents } } };
+        },
+        async patch(patch: { mcp?: { injectIntoAgents?: boolean } }) {
+          configPatches.push(patch);
+          if (patch.mcp?.injectIntoAgents !== undefined) injectIntoAgents = patch.mcp.injectIntoAgents;
+          return { config: { mcp: { enabled: true, injectIntoAgents } } };
+        },
+      },
       projects: { async list() { return { projects: [] }; } },
       providers: {
         async snapshot() {
@@ -301,7 +316,10 @@ describe("bot_registry adapter & paseo-adapter hardening", () => {
         async list() {
           return { entries: [] };
         },
-        async create(opts: { config: { provider: string; modeId?: string }; worktree?: { mode: string; newBranch?: string } }) {
+        async create(opts: {
+          config: { provider: string; modeId?: string; options?: { allowedTools?: string[] } };
+          worktree?: { mode: string; newBranch?: string };
+        }) {
           createCalls.push(opts);
           return { id: `created-${createCalls.length}` };
         },
@@ -319,7 +337,12 @@ describe("bot_registry adapter & paseo-adapter hardening", () => {
     const ensured = await adapter.ensureBotAgent(paseo, { ...baseBot, agentId: "stale-agent-99" });
     expect(ensured).toEqual({ agentId: "created-1", created: true });
     expect(warnSpy).toHaveBeenCalled();
-    expect(createCalls[0].config).toEqual({ provider: "claude/sonnet", modeId: "plan" });
+    expect(configPatches).toEqual([{ mcp: { injectIntoAgents: true } }]);
+    expect(createCalls[0].config).toEqual({
+      provider: "claude/sonnet",
+      modeId: "plan",
+      options: { allowedTools: ["mcp__paseo__inbox_capture"] },
+    });
 
     const leadBot = { ...baseBot, id: "lead-1", roleType: "project_lead" as const, permissionMode: "full" as const };
     await adapter.dispatchThread(paseo, {
@@ -329,6 +352,7 @@ describe("bot_registry adapter & paseo-adapter hardening", () => {
       cwd: subDir,
       worktree: true,
     });
+    expect(configPatches).toHaveLength(1);
     expect(createCalls[1].config).toEqual({ provider: "claude/sonnet", modeId: "bypassPermissions" });
     expect(createCalls[1].worktree?.mode).toBe("branch-off");
     expect(createCalls[1].worktree?.newBranch).toMatch(/^paseo-bot\/lead-1-[a-z0-9]+-[a-z0-9]{4}$/);
